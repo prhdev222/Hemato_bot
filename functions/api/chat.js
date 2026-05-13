@@ -289,11 +289,21 @@ async function queryFaqTurso(env) {
 
 /* ── System prompt ─────────────────────────────────────────── */
 function buildSystem({ schedule, faq }) {
+  const hiddenKeys = new Set([
+    'id', 'key', 'pin', 'line_user_id', 'created_by', 'created_at', 'updated_at',
+    'supervisor_id', 'elective_ids', 'chief_line_id', 'active',
+  ]);
+  const isPublicKey = (k) =>
+    !hiddenKeys.has(k) &&
+    !/_id$/.test(k) &&
+    !/_ids$/.test(k) &&
+    !/token|secret|password/i.test(k);
+
   const rows = (arr) => {
     if (!arr || arr.length === 0) return '  (ไม่มีข้อมูล)';
     return arr.map(r =>
       '  • ' + Object.entries(r)
-        .filter(([, v]) => v !== null && v !== '')
+        .filter(([k, v]) => isPublicKey(k) && v !== null && v !== '')
         .map(([k, v]) => `${k}: ${v}`)
         .join(' | ')
     ).join('\n');
@@ -306,8 +316,6 @@ function buildSystem({ schedule, faq }) {
       const en = String(it.answer_en ?? '').trim();
       return [
         `  [${i + 1}] ${it.tag_th ?? ''} / ${it.tag_en ?? ''}`,
-        `      keywords TH: ${it.keywords_th ?? ''}`,
-        `      keywords EN: ${it.keywords_en ?? ''}`,
         `      ตอบ (TH):\n${th.split('\n').map(l => '        ' + l).join('\n')}`,
         `      Answer (EN):\n${en.split('\n').map(l => '        ' + l).join('\n')}`,
       ].join('\n');
@@ -315,52 +323,57 @@ function buildSystem({ schedule, faq }) {
   };
 
   const scheduleSection = schedule.ok ? `
-=== ข้อมูลตารางจริง — Turso DB #1 (วันที่: ${schedule.today}) ===
+=== ข้อมูลตารางเวรและผู้มา elective (วันที่: ${schedule.today}) ===
 
-[นศพ./ผู้มา elective — ตาราง electives]
+[ผู้มา elective]
 ${rows(schedule.electives)}
 
-[แพทย์ / ทีมงาน (ตาราง doctors — งวด ward, chief, opd_schedule เป็นข้อความ)]
+[แพทย์ / ทีมงาน]
 ${rows(schedule.doctors)}
 
-[Chief / ward รายเดือน — ตาราง chiefs (month, ward_code, chief_name, supervise_list)]
+[Chief / ward รายเดือน]
 ${rows(schedule.chiefs)}
 
-[Chief residents ที่ active — chief_residents]
+[Chief residents]
 ${rows(schedule.chief_residents)}
 
-[Ward (ตารางอื่นถ้ามี)]
+[Ward]
 ${rows(schedule.ward)}
 
-[OPD วันนี้ (${schedule.today}) — จาก opd_calendar: supervisor_name = อ.ผู้ดูแล, elective_names = ชื่อนศพ. จาก elective_ids]
+[OPD วันนี้ (${schedule.today})]
 ${rows(schedule.opdToday)}
 
 [OPD เดือนนี้ทั้งหมด]
 ${rows(schedule.opdMonth)}
-` : '\n[Turso #1 ตาราง/แพทย์/OPD: ไม่ได้เชื่อมต่อ]\n';
+` : '\n[ยังไม่มีข้อมูลตารางเวร / OPD / ward]\n';
 
   const faqSection = faq.ok ? `
-=== คำถาม–คำตอบ Elective — Turso DB #2 (ตาราง config + items) ===
+=== คำถาม–คำตอบกิจกรรม Elective ===
 - ใช้บล็อกนี้เป็นหลักเมื่อถามเรื่องกิจกรรม elective / รอบวอร์ด / conference / OPD ทั่วไป / SelecX / หลังจบงาน
 - เลือกข้อความตอบจาก answer_th หรือ answer_en ให้ตรงกับภาษาที่ผู้ใช้ใช้
-- ถ้าคำถามเกี่ยวกับชื่อแพทย์ วันที่นัด OPD เฉพาะราย หรือตาราง ward รายวัน — ให้ยึดข้อมูลจาก Turso DB #1 ด้านบนเป็นหลัก (ไม่สมมติ)
+- ถ้าคำถามเกี่ยวกับชื่อแพทย์ วันที่นัด OPD เฉพาะราย หรือตาราง ward รายวัน — ให้ยึดข้อมูลตารางเวรด้านบนเป็นหลัก (ไม่สมมติ)
 
-[config / ประกาศ — value อาจมี HTML]
+[ประกาศ]
 ${rows(faq.config)}
 
-[รายการ FAQ — จับคู่จาก keywords + tag แล้วตอบจาก answer]
+[รายการคำตอบ]
 ${formatFaqItems(faq.items)}
-` : '\n[Turso #2 FAQ (items/config): ไม่ได้เชื่อมต่อ]\n';
+` : '\n[ยังไม่มีข้อมูลคำถาม–คำตอบกิจกรรม Elective]\n';
 
   return `You are Hemato Bot — a helpful assistant for the Hematology Division, Siriraj Hospital (โรงพยาบาลศิริราช), Thailand.
 
 RULES:
-- Always reply in the SAME language as the user's message (Thai → Thai, English → English).
-- Be concise, friendly, and accurate.
+- Reply in the user's language. If the user's message is entirely English, reply entirely in English.
+- For person names in English replies: use the English name only when a name_en / supervisor_name_en field is provided. If no English name is available, keep the Thai name exactly as written; do not transliterate or invent an English version.
+- For Thai replies, use Thai names normally.
+- Audience is elective students. Answer only what they need to know.
+- Be concise, friendly, and accurate. Prefer 1 short paragraph or 1-5 bullets.
 - NEVER invent names, dates, or schedules that are not in the data below.
-- If you don't know something, say so honestly.
-- For specific schedules (who is on OPD which day, ward roster), use Turso DB #1 only. For opd_calendar rows, use supervisor_name and elective_names when present; elective_ids alone is redundant if elective_names is filled.
-- For general elective activity content, prefer Turso DB #2 when it is connected; otherwise use the static outline at the bottom.
+- Never mention internal sources or technical details, including Turso, database, DB, API, token, key, schema, table names, IDs, or "ตามข้อมูลจาก...".
+- Do not include raw IDs such as elective_ids, supervisor_id, or any code-like values in the answer.
+- For specific schedules (who is on OPD which day, ward roster), use the schedule data only. Use supervisor_name and elective_names when present.
+- For general elective activity content, prefer the Q&A content when it is available; otherwise use the static outline at the bottom.
+- If the needed information is not available, say briefly: "ยังไม่มีข้อมูลนี้ในระบบครับ/ค่ะ" and do not suggest checking technical sources.
 
 ${scheduleSection}
 ${faqSection}
