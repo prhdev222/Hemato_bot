@@ -5,7 +5,7 @@
  *   GROQ_API_KEY     gsk_...     (สมัครฟรี console.groq.com)
  *
  * SambaNova Cloud (OpenAI-compatible — key ตั้งที่ Cloudflare เท่านั้น ไม่รับจากหน้าเว็บ)
- *   SAMBANOVA_API_KEY   หรือ SAMBANOVA_KEY (ทางเลือก ชื่อสั้น)
+ *   SAMBANOVA_API_KEY (แนะนำ) หรือ SAMBANOVA_KEY หรือ API_KEY (ชื่อเดียวกับตัวอย่าง $API_KEY ในแดชบอร์ด SambaNova)
  *   SAMBANOVA_MODEL  (ทางเลือก เช่น Meta-Llama-3.3-70B-Instruct)
  *
  * ทางเลือก (ถ้าไม่ให้ user ใส่ key ใน browser):
@@ -110,7 +110,7 @@ export async function onRequestPost({ request, env }) {
         const key = effectiveApiKey(apiKey, env.GEMINI_API_KEY);
         reply = await callGemini(messages, system, key);
       } else if (provider === 'sambanova') {
-        const k = readEnvSecretFlexible(env, 'SAMBANOVA_API_KEY', 'SAMBANOVA_KEY');
+        const k = readEnvSecretFlexible(env, 'SAMBANOVA_API_KEY', 'SAMBANOVA_KEY', 'API_KEY');
         reply = await callSambaNova(messages, system, k, env);
       } else if (provider === 'openrouter') {
         const key = effectiveApiKey(apiKey, env.OPENROUTER_API_KEY);
@@ -610,6 +610,216 @@ function intentWardOrRound(qNorm) {
   );
 }
 
+function wantsScheduleKeywords(qNorm) {
+  return /opd|ward|round|chief|schedule|ตาราง|ราวด์|วอร์ด|เมื่อไร|ช่วง|period|line|ไลน์|attending|นัด|กี่โมง|เวลา|slot|calendar|ดูงาน/.test(qNorm);
+}
+
+/** คำถามทั่วไปเรื่องกิจกรรม (ไม่ใช่ถามตารางรายคน) — กันไปจับชื่อผิด */
+function intentLikelyGeneralActivity(qNorm) {
+  return /conference|journal|lecture|selecx|feedback|กิจกรรม|อบรม|mm\b|grand/.test(qNorm);
+}
+
+function parseElectiveIdsFromRow(row) {
+  try {
+    const raw = row?.elective_ids;
+    const ids = typeof raw === 'string' ? JSON.parse(raw || '[]') : Array.isArray(raw) ? raw : [];
+    return ids.map(String);
+  } catch {
+    return [];
+  }
+}
+
+function scoreElectiveAgainstQuery(qNorm, e) {
+  let s = 0;
+  const parts = [e.name, e.name_en, e.from_hospital].filter(Boolean);
+  for (const p of parts) {
+    const pn = normQ(p);
+    if (!pn || pn.length < 2) continue;
+    if (qNorm === pn) s += 220;
+    else if (qNorm.includes(pn)) s += 95 + Math.min(50, pn.length);
+    else if (pn.length >= 4 && pn.includes(qNorm)) s += 70;
+    for (const t of qNorm.split(/[^a-z0-9\u0e00-\u0e7f]+/)) {
+      if (t.length < 3) continue;
+      if (pn.includes(t)) s += 18;
+    }
+  }
+  return s;
+}
+
+function bestElectiveMatchFromQuery(rawQ, electives) {
+  if (!electives || !electives.length) return null;
+  const qNorm = normQ(rawQ);
+  let best = null;
+  let bestScore = 0;
+  for (const e of electives) {
+    const sc = scoreElectiveAgainstQuery(qNorm, e);
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = e;
+    }
+  }
+  if (!best || bestScore < 22) return null;
+  return { elective: best, score: bestScore };
+}
+
+function shouldShowPersonalElectiveCard(qNorm, score) {
+  if (intentLikelyGeneralActivity(qNorm) && !wantsScheduleKeywords(qNorm)) {
+    return score >= 200;
+  }
+  if (score >= 95) return true;
+  if (score >= 40 && wantsScheduleKeywords(qNorm)) return true;
+  return false;
+}
+
+function findDoctorForElective(e, doctors) {
+  if (!doctors || !e) return null;
+  const targets = [normQ(e.name), normQ(e.name_en)].filter((t) => t && t.length >= 2);
+  for (const d of doctors) {
+    const dn = normQ(d.name);
+    if (!dn) continue;
+    for (const t of targets) {
+      if (t && (dn.includes(t) || t.includes(dn))) return d;
+    }
+  }
+  return null;
+}
+
+function opdDateSortKey(r) {
+  return cellToYmd(r.date ?? r.opd_date ?? r.clinic_date ?? r.schedule_date ?? '');
+}
+
+function opdRowsForElectiveId(schedule, electiveId) {
+  const id = String(electiveId);
+  const pool = schedule.opdMonth || [];
+  return pool
+    .filter((r) => parseElectiveIdsFromRow(r).includes(id))
+    .slice()
+    .sort((a, b) => opdDateSortKey(a).localeCompare(opdDateSortKey(b)));
+}
+
+function lineIdDisplay(link) {
+  const s = String(link ?? '').trim();
+  if (!s) return '—';
+  const at = s.match(/@[A-Za-z0-9._-]+/);
+  if (at) return at[0];
+  return truncSys(s, 80);
+}
+
+function formatCardDateFromRow(r, wantTh) {
+  const raw = r.date ?? r.opd_date ?? r.clinic_date ?? r.schedule_date;
+  const ymd = cellToYmd(raw);
+  if (!ymd || ymd.length < 10) return '—';
+  const [y, mo, d] = ymd.split('-').map(Number);
+  const local = new Date(y, mo - 1, d, 12, 0, 0);
+  try {
+    return local.toLocaleDateString(wantTh ? 'th-TH' : 'en-GB', {
+      timeZone: 'Asia/Bangkok',
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+  } catch {
+    return ymd;
+  }
+}
+
+function pickAttendingHint(d) {
+  if (!d) return '—';
+  const os = String(d.opd_schedule || '').trim();
+  if (os) return truncSys(os.split('\n')[0], 140);
+  const n = String(d.notes || '').trim();
+  if (n) return truncSys(n, 140);
+  return '—';
+}
+
+function hasSecondPeriodBlock(e, d) {
+  return !!(
+    String(e?.date_range2 || '').trim() ||
+    String(e?.ward2 || '').trim() ||
+    String(d?.period2_dates || '').trim() ||
+    String(d?.ward2 || '').trim() ||
+    String(d?.chief2_name || '').trim()
+  );
+}
+
+function formatElectiveScheduleCard(e, doctor, opdRows, wantTh) {
+  const display = String(e.name_en || '').trim() || String(e.name || '').trim() || 'Elective';
+  const level = String(e.level || doctor?.type || '').trim() || '—';
+  const p1Dates = String(e.date_range || doctor?.period1_dates || '').trim() || '—';
+  const p1Ward = String(e.ward || doctor?.ward1 || '').trim() || '—';
+  const chief1 = String(doctor?.chief1_name || '').trim() || '—';
+  const line1 = lineIdDisplay(doctor?.chief1_link);
+  const attend = pickAttendingHint(doctor);
+
+  const lines = [];
+  if (wantTh) {
+    lines.push('สวัสดีค่ะ/ครับ 🧑‍⚕️');
+    lines.push(`${display} (${level}) ตาราง elective โดยสรุปจากข้อมูลในระบบมีดังนี้:`);
+    lines.push('');
+    lines.push(`🟦 ช่วงที่ 1 (${p1Dates})`);
+    lines.push(`🏥 Ward: ${p1Ward}`);
+    lines.push(`👑 Chief: ${chief1}`);
+    lines.push(`📱 LINE: ${line1}`);
+    lines.push('(แนะนำให้ add LINE เพื่อนัดเวลา/สถานที่ราวด์วอร์ดกับ chief)');
+    lines.push(`👨‍⚕️ อาจารย์/ทีมร่วมราวด์ (จากข้อมูล field): ${attend}`);
+  } else {
+    lines.push('Hello Dr. 🧑‍⚕️');
+    lines.push(`${display} (${level}), your elective schedule is as follows:`);
+    lines.push('');
+    lines.push(`🟦 Period 1 (${p1Dates})`);
+    lines.push(`🏥 Ward: ${p1Ward}`);
+    lines.push(`👑 Chief: ${chief1}`);
+    lines.push(`📱 LINE ID: ${line1}`);
+    lines.push('(Please add LINE to coordinate the ward round time and location.)');
+    lines.push(`👨‍⚕️ Attending / notes from roster: ${attend}`);
+  }
+
+  if (hasSecondPeriodBlock(e, doctor)) {
+    const p2d = String(e.date_range2 || doctor?.period2_dates || '').trim() || '—';
+    const p2w = String(e.ward2 || doctor?.ward2 || '').trim() || '—';
+    const ch2 = String(doctor?.chief2_name || '').trim() || '—';
+    const ln2 = lineIdDisplay(doctor?.chief2_link);
+    lines.push('');
+    lines.push(wantTh ? `🟪 ช่วงที่ 2 (${p2d})` : `🟪 Period 2 (${p2d})`);
+    lines.push(`🏥 Ward: ${p2w}`);
+    lines.push(`👑 Chief: ${ch2}`);
+    if (ln2 !== '—') lines.push(`${wantTh ? '📱 LINE' : '📱 LINE ID'}: ${ln2}`);
+  }
+
+  lines.push('');
+  lines.push(wantTh ? '🏥 ตาราง OPD (เดือนนี้จากฐานข้อมูล)' : '🏥 OPD Schedule');
+  if (opdRows && opdRows.length) {
+    for (const r of opdRows) {
+      const when = formatCardDateFromRow(r, wantTh);
+      const sup =
+        String(r.supervisor_name_en || '').trim() ||
+        String(r.supervisor_name || '').trim() ||
+        String(r.supervisor_name_th || '').trim() ||
+        '—';
+      lines.push(`• ${when} — ${wantTh ? 'กับ' : 'With'} ${sup}`);
+    }
+  } else {
+    lines.push(wantTh ? '• (ยังไม่มีแถว OPD ที่ผูก elective_id นี้ในเดือนนี้)' : '• (No OPD rows linked to this elective for the current month.)');
+  }
+
+  lines.push('');
+  lines.push(
+    wantTh
+      ? 'ขอให้ช่วง elective ที่ศิริราชมีความสุขและได้ความรู้เพิ่มขึ้นเยอะๆ นะครับ/ค่ะ 🩷'
+      : 'Wishing you a joyful and rewarding elective at Siriraj Hospital and a wonderful time in Thailand 🩷'
+  );
+  return lines.join('\n');
+}
+
+function tryPersonalElectiveScheduleBlock(rawQ, qNorm, schedule, wantTh) {
+  if (!schedule?.ok || !schedule.electives?.length) return null;
+  const hit = bestElectiveMatchFromQuery(rawQ, schedule.electives);
+  if (!hit || !shouldShowPersonalElectiveCard(qNorm, hit.score)) return null;
+  const doctor = findDoctorForElective(hit.elective, schedule.doctors || []);
+  const opdRows = opdRowsForElectiveId(schedule, hit.elective.id);
+  return formatElectiveScheduleCard(hit.elective, doctor, opdRows, wantTh);
+}
+
 /** คืนข้อความหรือ null ถ้าไม่มีอะไรจะตอบได้เลย */
 function fallbackReplyFromData(messages, schedule, faq) {
   const rawQ = lastUserText(messages);
@@ -626,6 +836,14 @@ function fallbackReplyFromData(messages, schedule, faq) {
     return wantTh
       ? head + 'ยังโหลดข้อมูลตาราง/FAQ จากระบบไม่ได้ครับ ลองใหม่ภายหลังนะครับ'
       : head + 'We could not load schedule or FAQ data. Please try again later.';
+  }
+
+  if (hasSch) {
+    const card = tryPersonalElectiveScheduleBlock(rawQ, qNorm, schedule, wantTh);
+    if (card) {
+      const out = head + card;
+      return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
+    }
   }
 
   const chunks = [];
@@ -763,7 +981,7 @@ async function callSambaNova(messages, system, key, env) {
     throw new Error(
       'ไม่พบ SambaNova API key ใน env ของฟังก์ชันนี้\n\n' +
       '• ต้องตั้งที่ Pages project เดียวกับเว็บ (Workers & Pages → เลือกโปรเจกต์ → Settings → Variables and secrets)\n' +
-      '• ใช้ชื่อ SAMBANOVA_API_KEY หรือ SAMBANOVA_KEY (รองรับตัวพิมพ์เล็ก/ใหญ่ของชื่อ key)\n' +
+      '• ใช้ชื่อ SAMBANOVA_API_KEY, SAMBANOVA_KEY หรือ API_KEY (ตามตัวอย่าง $API_KEY ในแดชบอร์ด SambaNova — ต้องเป็น key ของ SambaNova ไม่ใช่ Groq)\n' +
       '• ถ้าใช้หน้า *.pages.dev จาก branch ลอง: ใส่ตัวแปรในแท็บ Preview ด้วย หรือ merge ไป main (Production)\n' +
       '• ถ้า deploy ด้วย wrangler โดยไม่ผูก secret กับ Pages ให้ใช้: wrangler pages secret put SAMBANOVA_API_KEY\n' +
       '• หลังเพิ่ม/แก้ค่าให้ Retry deployment หนึ่งครั้ง\n\n' +
