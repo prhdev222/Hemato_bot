@@ -42,6 +42,20 @@ function effectiveApiKey(clientKey, envKey) {
   return e;
 }
 
+const SYSTEM_HIDDEN_KEYS = new Set([
+  'id', 'key', 'pin', 'line_user_id', 'created_by', 'created_at', 'updated_at',
+  'supervisor_id', 'elective_ids', 'chief_line_id', 'active',
+]);
+
+function isPublicDataKey(k) {
+  return (
+    !SYSTEM_HIDDEN_KEYS.has(k) &&
+    !/_id$/.test(k) &&
+    !/_ids$/.test(k) &&
+    !/token|secret|password/i.test(k)
+  );
+}
+
 export async function onRequestOptions() {
   return new Response(null, { headers: CORS });
 }
@@ -58,23 +72,34 @@ export async function onRequestPost({ request, env }) {
     const system = buildSystem({ schedule, faq });
 
     let reply;
-    if (provider === 'openai') {
-      const key = effectiveApiKey(apiKey, env.OPENAI_API_KEY);
-      reply = await callOpenAI(messages, system, key);
-    } else if (provider === 'gemini') {
-      const key = effectiveApiKey(apiKey, env.GEMINI_API_KEY);
-      reply = await callGemini(messages, system, key);
-    } else if (provider === 'sambanova') {
-      const k = env.SAMBANOVA_API_KEY == null ? '' : String(env.SAMBANOVA_API_KEY).trim();
-      reply = await callSambaNova(messages, system, k, env);
-    } else if (provider === 'openrouter') {
-      const key = effectiveApiKey(apiKey, env.OPENROUTER_API_KEY);
-      reply = await callOpenRouter(messages, system, key, env);
-    } else {
-      reply = await callGroq(messages, system, env.GROQ_API_KEY);
+    let fallback = false;
+    try {
+      if (provider === 'openai') {
+        const key = effectiveApiKey(apiKey, env.OPENAI_API_KEY);
+        reply = await callOpenAI(messages, system, key);
+      } else if (provider === 'gemini') {
+        const key = effectiveApiKey(apiKey, env.GEMINI_API_KEY);
+        reply = await callGemini(messages, system, key);
+      } else if (provider === 'sambanova') {
+        const k = env.SAMBANOVA_API_KEY == null ? '' : String(env.SAMBANOVA_API_KEY).trim();
+        reply = await callSambaNova(messages, system, k, env);
+      } else if (provider === 'openrouter') {
+        const key = effectiveApiKey(apiKey, env.OPENROUTER_API_KEY);
+        reply = await callOpenRouter(messages, system, key, env);
+      } else {
+        reply = await callGroq(messages, system, env.GROQ_API_KEY);
+      }
+    } catch (aiErr) {
+      const fb = fallbackReplyFromData(messages, schedule, faq);
+      if (fb) {
+        reply = fb;
+        fallback = true;
+      } else {
+        throw aiErr;
+      }
     }
 
-    return new Response(JSON.stringify({ reply }), { headers: CORS });
+    return new Response(JSON.stringify({ reply, fallback }), { headers: CORS });
 
   } catch (err) {
     return new Response(
@@ -322,21 +347,11 @@ function truncSys(s, max) {
 }
 
 function buildSystem({ schedule, faq }) {
-  const hiddenKeys = new Set([
-    'id', 'key', 'pin', 'line_user_id', 'created_by', 'created_at', 'updated_at',
-    'supervisor_id', 'elective_ids', 'chief_line_id', 'active',
-  ]);
-  const isPublicKey = (k) =>
-    !hiddenKeys.has(k) &&
-    !/_id$/.test(k) &&
-    !/_ids$/.test(k) &&
-    !/token|secret|password/i.test(k);
-
   const rows = (arr) => {
     if (!arr || arr.length === 0) return '  (ไม่มีข้อมูล)';
     return arr.map(r =>
       '  • ' + Object.entries(r)
-        .filter(([k, v]) => isPublicKey(k) && v !== null && v !== '')
+        .filter(([k, v]) => isPublicDataKey(k) && v !== null && v !== '')
         .map(([k, v]) => `${k}: ${typeof v === 'string' ? truncSys(v, SYS_MAX_CELL) : v}`)
         .join(' | ')
     ).join('\n');
@@ -460,6 +475,240 @@ Blood products, Thalassemia, Bleeding/Thrombosis, Lymphoma
 Link: https://docs.google.com/forms/d/e/1FAIpQLSeHPePaS04OyV44_Uh3Hw1ifGKNaO5nK6tMqtXP_b-trJMffw/viewform
 `}
 `.trim();
+}
+
+/* ── ตอบจากข้อมูลโดยไม่ใช้ AI (เมื่อเรียกโมเดลล้มเหลว) ─────────────── */
+const FALLBACK_MAX = 5600;
+const FALLBACK_CELL = 280;
+
+function lastUserText(messages) {
+  if (!Array.isArray(messages)) return '';
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.role === 'user' && m.content != null) {
+      const t = String(m.content).trim();
+      if (t) return t;
+    }
+  }
+  return '';
+}
+
+function prefersThai(text) {
+  return /[\u0e00-\u0e7f]/.test(String(text || ''));
+}
+
+function normQ(s) {
+  return String(s || '').trim().toLowerCase();
+}
+
+function formatPublicRows(arr, maxRows) {
+  if (!arr || !arr.length) return '';
+  const lines = [];
+  const n = Math.min(maxRows, arr.length);
+  for (let i = 0; i < n; i++) {
+    const r = arr[i];
+    const bits = Object.entries(r)
+      .filter(([k, v]) => isPublicDataKey(k) && v !== null && v !== '')
+      .map(([k, v]) => {
+        const t = typeof v === 'string' ? truncSys(v, FALLBACK_CELL) : v;
+        return `${k}: ${t}`;
+      });
+    if (bits.length) lines.push('• ' + bits.join(' · '));
+  }
+  return lines.join('\n');
+}
+
+function scoreFaqItem(qNorm, item) {
+  let score = 0;
+  const blobs = [item.tag_th, item.tag_en, item.keywords_th, item.keywords_en];
+  for (const b of blobs) {
+    const s = normQ(b);
+    if (s.length >= 3 && qNorm.includes(s)) score += Math.min(70, s.length * 2);
+  }
+  const splitKw = (s) =>
+    String(s || '')
+      .split(/[,，、]/)
+      .map((x) => normQ(x))
+      .filter((k) => k.length >= 2);
+  for (const k of splitKw(item.keywords_th)) {
+    if (qNorm.includes(k)) score += 14;
+  }
+  for (const k of splitKw(item.keywords_en)) {
+    if (qNorm.includes(k)) score += 14;
+  }
+  const ath = normQ(item.answer_th);
+  const aen = normQ(item.answer_en);
+  for (const t of qNorm.split(/\s+/)) {
+    if (t.length < 4) continue;
+    if (ath.includes(t) || aen.includes(t)) score += 3;
+  }
+  return score;
+}
+
+function intentOpdToday(qNorm, raw) {
+  const r = String(raw || '').toLowerCase();
+  const opd = qNorm.includes('opd') || r.includes('opd');
+  if (!opd) return false;
+  return (
+    qNorm.includes('วันนี้') ||
+    qNorm.includes('today') ||
+    (qNorm.includes('ใคร') && opd) ||
+    /\bwho\b.*\bopd\b|\bopd\b.*\b(today|who)\b/i.test(r)
+  );
+}
+
+function intentOpdMonth(qNorm) {
+  return (
+    qNorm.includes('opd') &&
+    (qNorm.includes('เดือน') || qNorm.includes('month') || qNorm.includes('ตาราง'))
+  );
+}
+
+function intentElectiveRoster(qNorm) {
+  return (
+    (qNorm.includes('elective') && (qNorm.includes('ใคร') || qNorm.includes('who') || qNorm.includes('มี'))) ||
+    qNorm.includes('มีใคร') ||
+    (qNorm.includes('นศพ') && qNorm.includes('ใคร'))
+  );
+}
+
+function intentWardOrRound(qNorm) {
+  return (
+    qNorm.includes('ward') ||
+    qNorm.includes('วอร์ด') ||
+    qNorm.includes('ราวด์') ||
+    qNorm.includes('round')
+  );
+}
+
+/** คืนข้อความหรือ null ถ้าไม่มีอะไรจะตอบได้เลย */
+function fallbackReplyFromData(messages, schedule, faq) {
+  const rawQ = lastUserText(messages);
+  const qNorm = normQ(rawQ);
+  const wantTh = rawQ === '' ? true : prefersThai(rawQ);
+
+  const head = wantTh
+    ? 'ตอนนี้เชื่อมต่อ AI ไม่ได้ จึงสรุปจากข้อมูลในระบบให้แบบย่อครับ:\n\n'
+    : 'The AI service is unavailable. Here is a short summary from our records:\n\n';
+
+  const hasSch = schedule && schedule.ok;
+  const hasFaq = faq && faq.ok;
+  if (!hasSch && !hasFaq) {
+    return wantTh
+      ? head + 'ยังโหลดข้อมูลตาราง/FAQ จากระบบไม่ได้ครับ ลองใหม่ภายหลังนะครับ'
+      : head + 'We could not load schedule or FAQ data. Please try again later.';
+  }
+
+  const chunks = [];
+
+  if (hasFaq && faq.items && faq.items.length) {
+    const ranked = faq.items
+      .map((it) => ({ it, s: scoreFaqItem(qNorm, it) }))
+      .filter((x) => x.s > 0)
+      .sort((a, b) => b.s - a.s);
+    if (ranked.length && ranked[0].s >= 12) {
+      const it = ranked[0].it;
+      const ans = wantTh
+        ? String(it.answer_th ?? '').trim() || String(it.answer_en ?? '').trim()
+        : String(it.answer_en ?? '').trim() || String(it.answer_th ?? '').trim();
+      if (ans) {
+        chunks.push(ans);
+        const out = head + chunks.join('\n\n');
+        return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
+      }
+    }
+    if (ranked.length && ranked[0].s >= 5) {
+      const top = ranked.slice(0, 3);
+      for (let i = 0; i < top.length; i++) {
+        const it = top[i].it;
+        const tag = wantTh ? (it.tag_th || it.tag_en) : (it.tag_en || it.tag_th);
+        const ans = wantTh
+          ? String(it.answer_th ?? '').trim() || String(it.answer_en ?? '').trim()
+          : String(it.answer_en ?? '').trim() || String(it.answer_th ?? '').trim();
+        if (ans) chunks.push(`${i + 1}) ${tag ? `[${tag}] ` : ''}${ans}`);
+      }
+      if (chunks.length) {
+        const out = head + chunks.join('\n\n');
+        return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
+      }
+    }
+  }
+
+  if (hasSch) {
+    if (intentOpdToday(qNorm, rawQ) && schedule.opdToday && schedule.opdToday.length) {
+      const block = formatPublicRows(schedule.opdToday, 40);
+      chunks.push(
+        wantTh ? `[OPD วันนี้ ${schedule.today}]\n${block}` : `[OPD today ${schedule.today}]\n${block}`
+      );
+    } else if (intentOpdMonth(qNorm) && schedule.opdMonth && schedule.opdMonth.length) {
+      chunks.push(
+        wantTh
+          ? `[OPD เดือนนี้ (บางรายการ)]\n${formatPublicRows(schedule.opdMonth, 35)}`
+          : `[OPD this month (partial)]\n${formatPublicRows(schedule.opdMonth, 35)}`
+      );
+    } else if (intentElectiveRoster(qNorm) && schedule.electives && schedule.electives.length) {
+      chunks.push(
+        wantTh
+          ? `[ผู้มา elective]\n${formatPublicRows(schedule.electives, 40)}`
+          : `[Elective students]\n${formatPublicRows(schedule.electives, 40)}`
+      );
+    } else if (intentWardOrRound(qNorm)) {
+      if (schedule.ward && schedule.ward.length) {
+        chunks.push(
+          wantTh ? `[Ward]\n${formatPublicRows(schedule.ward, 30)}` : `[Ward]\n${formatPublicRows(schedule.ward, 30)}`
+        );
+      }
+      if (schedule.chiefs && schedule.chiefs.length) {
+        chunks.push(
+          wantTh ? `[Chief รายเดือน]\n${formatPublicRows(schedule.chiefs, 25)}` : `[Chiefs]\n${formatPublicRows(schedule.chiefs, 25)}`
+        );
+      }
+    }
+  }
+
+  if (!chunks.length && hasFaq && faq.items && faq.items.length) {
+    const ranked = faq.items
+      .map((it) => ({ it, s: scoreFaqItem(qNorm, it) }))
+      .sort((a, b) => b.s - a.s);
+    const pick = ranked.filter((x) => x.s > 0).slice(0, 2);
+    for (let i = 0; i < pick.length; i++) {
+      const it = pick[i].it;
+      const ans = wantTh
+        ? String(it.answer_th ?? '').trim() || String(it.answer_en ?? '').trim()
+        : String(it.answer_en ?? '').trim() || String(it.answer_th ?? '').trim();
+      if (ans) chunks.push(ans);
+    }
+  }
+
+  if (!chunks.length && hasSch) {
+    const sub = [];
+    if (schedule.opdToday && schedule.opdToday.length) {
+      sub.push(
+        wantTh
+          ? `[OPD วันนี้]\n${formatPublicRows(schedule.opdToday, 25)}`
+          : `[OPD today]\n${formatPublicRows(schedule.opdToday, 25)}`
+      );
+    }
+    if (schedule.electives && schedule.electives.length) {
+      sub.push(
+        wantTh
+          ? `[ผู้มา elective]\n${formatPublicRows(schedule.electives, 20)}`
+          : `[Electives]\n${formatPublicRows(schedule.electives, 20)}`
+      );
+    }
+    if (sub.length) chunks.push(sub.join('\n\n'));
+  }
+
+  if (!chunks.length) {
+    chunks.push(
+      wantTh
+        ? 'จับคำถามกับข้อมูลในระบบไม่ตรงชัดเจน — ลองถามเช่น "วันนี้ใครออก OPD?" หรือ "ตอนนี้มี elective ใครบ้าง?" หรือถามเรื่องกิจกรรม elective เป็นประโยคสั้นๆ อีกครั้งนะครับ'
+        : 'Try a short question such as who is on OPD today or who is on elective, and we will match it to the database.'
+    );
+  }
+
+  const out = head + chunks.join('\n\n');
+  return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
 }
 
 /* ── AI providers ──────────────────────────────────────────── */

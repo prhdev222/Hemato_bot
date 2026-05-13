@@ -498,12 +498,13 @@ async function send() {
       addErr(d.error);
     } else {
       hist.push({ role: 'assistant', content: d.reply });
-      const lbl =
+      const lblBase =
         c.provider === 'openai' ? 'OpenAI gpt-4o'
         : c.provider === 'gemini' ? 'Google Gemini 2.0 Flash'
         : c.provider === 'sambanova' ? 'SambaNova Llama 3.3 70B'
         : c.provider === 'openrouter' ? 'OpenRouter'
         : 'Groq llama-3.3-70b';
+      const lbl = d.fallback ? lblBase + ' · ข้อมูลสำรอง (ไม่ใช้ AI)' : lblBase;
       bot(d.reply, lbl);
     }
   } catch (e) {
