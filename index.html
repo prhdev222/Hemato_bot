@@ -53,9 +53,33 @@ header {
 .h-av img { width: 100%; height: 100%; object-fit: contain; }
 .h-txt h1 { font-family: 'Playfair Display', serif; font-size: .98rem; }
 .h-txt p  { font-size: .71rem; opacity: .85; margin-top: 1px; }
+.h-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.h-menu-btn {
+  border: 1px solid rgba(255,255,255,.35);
+  background: rgba(0,0,0,.15);
+  color: var(--text-inv);
+  font-family: 'Sarabun', sans-serif;
+  font-size: .68rem;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s, border-color .15s;
+}
+.h-menu-btn:hover {
+  background: rgba(0,0,0,.28);
+  border-color: rgba(255,255,255,.5);
+}
 .h-dot {
   width: 7px; height: 7px; border-radius: 50%; background: #4ade80;
-  margin-left: auto; flex-shrink: 0;
+  flex-shrink: 0;
   box-shadow: 0 0 0 3px rgba(74,222,128,.2);
   animation: blink 2.5s infinite;
 }
@@ -69,10 +93,18 @@ header {
   transition: opacity .18s ease, max-height .18s ease, padding .18s ease;
   overflow: hidden;
 }
-.shell.chatting .settings {
-  max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0;
-  border-bottom: 0; pointer-events: none;
+/* ซ่อนเมนู AI ด้วยปุ่ม header — พื้นที่แชทกว้างขึ้น (ไม่ซ่อนอัตโนมัติตอนพิมพ์) */
+.shell.menu-collapsed .settings {
+  max-height: 0 !important; opacity: 0 !important;
+  padding-top: 0 !important; padding-bottom: 0 !important;
+  border-bottom: 0 !important; pointer-events: none !important;
+  overflow: hidden;
 }
+.shell.menu-collapsed .mode {
+  display: none;
+}
+.shell.menu-collapsed .bcol { max-width: 92%; }
+.shell.menu-collapsed .bar textarea { max-height: 180px; }
 .settings label { font-size: .75rem; color: var(--muted); white-space: nowrap; font-weight: 600; }
 .settings select {
   border: 1.5px solid var(--border); border-radius: 8px;
@@ -263,13 +295,18 @@ img.hemato-zoom { cursor: zoom-in; }
     <h1>Hemato Bot</h1>
     <p>สาขาวิชาโลหิตวิทยา · โรงพยาบาลศิริราช</p>
   </div>
-  <div class="h-dot"></div>
+  <div class="h-actions">
+    <button type="button" class="h-menu-btn" id="menuToggle" onclick="toggleMenuPanel()"
+      title="ซ่อนหรือแสดงเมนูตั้งค่า AI">ซ่อนเมนู</button>
+    <div class="h-dot" aria-hidden="true"></div>
+  </div>
 </header>
 
 <!-- Settings -->
 <div class="settings">
   <label>AI:</label>
   <select id="prov" onchange="onProv()">
+    <option value="noai">🗄️ DB โดยตรง (ไม่ใช้ AI — เร็ว แม่นยำ)</option>
     <option value="groq">🆓 Groq (ฟรี — ไม่ต้องใส่ key)</option>
     <option value="sambanova">⚡ SambaNova Cloud (key จาก Cloudflare — Llama 3.3 70B)</option>
     <option value="openai">💳 OpenAI GPT-4o (ใส่ key)</option>
@@ -336,12 +373,34 @@ let busy  = false;
 function cfg()     { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch { return {}; } }
 function setCfg(o) { localStorage.setItem(STORE, JSON.stringify(o)); }
 
+function applyMenuCollapsed(collapsed) {
+  const shell = document.querySelector('.shell');
+  const btn = document.getElementById('menuToggle');
+  if (!shell || !btn) return;
+  shell.classList.toggle('menu-collapsed', collapsed);
+  btn.textContent = collapsed ? 'เมนู' : 'ซ่อนเมนู';
+  btn.title = collapsed ? 'แสดงเมนูตั้งค่า AI' : 'ซ่อนเมนูตั้งค่า AI (พื้นที่แชทกว้างขึ้น)';
+}
+
+function toggleMenuPanel() {
+  const shell = document.querySelector('.shell');
+  if (!shell) return;
+  const next = !shell.classList.contains('menu-collapsed');
+  applyMenuCollapsed(next);
+  const c = cfg();
+  c.menuCollapsed = next;
+  setCfg(c);
+  resize(document.getElementById('box'));
+}
+
 function onProv() {
   const v = document.getElementById('prov').value;
   const needKey = v === 'openai' || v === 'gemini' || v === 'openrouter';
   document.getElementById('keyRow').style.display = needKey ? 'flex' : 'none';
   const inp = document.getElementById('keyInput');
-  if (v === 'openai') {
+  if (v === 'noai') {
+    document.getElementById('modeLabel').textContent = 'ข้อมูล DB โดยตรง (ไม่ใช้ AI)';
+  } else if (v === 'openai') {
     inp.placeholder = 'sk-proj-... หรือ sk-...';
     document.getElementById('modeLabel').textContent = 'OpenAI GPT-4o';
   } else if (v === 'gemini') {
@@ -377,6 +436,7 @@ function saveKey() {
     onProv();
   }
   if (c.apiKey) document.getElementById('keyInput').value = c.apiKey;
+  if (c.menuCollapsed) applyMenuCollapsed(true);
 })();
 
 function openMascotModal() {
@@ -499,12 +559,14 @@ async function send() {
     } else {
       hist.push({ role: 'assistant', content: d.reply });
       const lblBase =
-        c.provider === 'openai' ? 'OpenAI gpt-4o'
+        c.provider === 'noai'      ? 'ข้อมูล DB โดยตรง'
+        : c.provider === 'openai' ? 'OpenAI gpt-4o'
         : c.provider === 'gemini' ? 'Google Gemini 2.0 Flash'
         : c.provider === 'sambanova' ? 'SambaNova Llama 3.3 70B'
         : c.provider === 'openrouter' ? 'OpenRouter'
         : 'Groq llama-3.3-70b';
-      const lbl = d.fallback ? lblBase + ' · ข้อมูลสำรอง (ไม่ใช้ AI)' : lblBase;
+      // โหมด DB โดยตรง: ไม่แสดง "ข้อมูลสำรอง" เพราะนั่นคือ intentional
+      const lbl = (d.fallback && c.provider !== 'noai') ? lblBase + ' · ข้อมูลสำรอง (ไม่ใช้ AI)' : lblBase;
       bot(d.reply, lbl);
     }
   } catch (e) {
@@ -519,7 +581,8 @@ function q(t)     { document.getElementById('box').value = t; send(); }
 function onKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }
 function resize(el) {
   el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 110) + 'px';
+  const max = document.querySelector('.shell')?.classList.contains('menu-collapsed') ? 180 : 110;
+  el.style.height = Math.min(el.scrollHeight, max) + 'px';
 }
 </script>
 </body>

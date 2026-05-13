@@ -102,6 +102,14 @@ export async function onRequestPost({ request, env }) {
 
     let reply;
     let fallback = false;
+
+    /* ── โหมดไม่ใช้ AI: ดึง DB ตรงๆ ──────────────────────────── */
+    if (provider === 'noai') {
+      reply = fallbackReplyFromData(messages, schedule, faq, true);
+      fallback = true;
+      return new Response(JSON.stringify({ reply, fallback }), { headers: CORS });
+    }
+
     try {
       if (provider === 'openai') {
         const key = effectiveApiKey(apiKey, env.OPENAI_API_KEY);
@@ -610,6 +618,52 @@ function intentWardOrRound(qNorm) {
   );
 }
 
+/** ถามเวลาราวด์/วอร์ด — ห้ามตอบแค่รายชื่อ chief (ตาราง chiefs ไม่มีฟิลด์เวลา) */
+function intentWardRoundTimeQuestion(qNorm) {
+  if (!intentWardOrRound(qNorm)) return false;
+  return /กี่โมง|几点|เวลาไหน|เวลาอะไร|เมื่อไร|what\s*time|what\s*hour|\bwhen\b.*\b(round|ward)|\b(round|ward)\b.*\bwhen\b/i.test(
+    qNorm
+  );
+}
+
+function wardRoundTimeFaqBonus(qNorm, item) {
+  if (!intentWardRoundTimeQuestion(qNorm)) return 0;
+  const blob = normQ(
+    [item.tag_th, item.tag_en, item.keywords_th, item.keywords_en, item.answer_th, item.answer_en].join(' | ')
+  );
+  let b = 0;
+  if (/ราวด์|ward\s*round|\bround\b|วอร์ด/.test(blob)) b += 28;
+  if (/7:30|7\.30|เช้า|morning|บ่าย|afternoon|กี่โมง|เวลา/.test(blob)) b += 22;
+  return b;
+}
+
+function staticWardRoundTimeBlock(wantTh, isDirectMode) {
+  if (wantTh) {
+    const lines = [
+      'ราวด์วอร์ด — เวลาโดยสรุป (มาตรฐาน elective โลหิตวิทยา ศิริราช)',
+      '',
+      '• ราวด์เช้า: โดยทั่วไปประมาณ 7:30 น. — นัดยืนยันเวลาและจุดนัดกับ chief resident ล่วงหน้า (ทีมอาจเลื่อนเวลาได้)',
+      '• บ่าย: ราวด์ consult / ดู blood smear หรือ bone marrow กับ attending ตามที่ทีมนัด',
+      '',
+      '• รายชื่อ Chief รายเดือนในฐานข้อมูลไม่ได้เก็บเวลาราวด์ — ถ้าต้องการชื่อ chief แยกถามว่า "chief วอร์ดชาย/หญิง เดือนนี้"',
+      '• เวลาที่แน่นอนดูใน note กลุ่ม LINE elective หรือสอบถาม chief โดยตรง',
+    ];
+    if (!isDirectMode) lines.push('• เมื่อใช้ AI ได้ จะช่วยสรุปจาก FAQ/คำถามเดิมในระบบให้ละเอียดขึ้น');
+    return lines.join('\n');
+  }
+  const lines = [
+    'Ward rounds — typical timing (Hematology elective at Siriraj)',
+    '',
+    '• Morning round: usually around 7:30 — confirm time & meeting point with the chief resident in advance (may change).',
+    '• Afternoon: consult rounds / smears / marrow with attending as arranged by the team.',
+    '',
+    '• The monthly chief roster in the database does not store round clock-times — ask separately for “chief male/female ward this month” if you need names.',
+    '• For exact times, check the elective LINE group notes or ask the chief directly.',
+  ];
+  if (!isDirectMode) lines.push('• With AI enabled, answers can combine FAQ content more naturally.');
+  return lines.join('\n');
+}
+
 function wantsScheduleKeywords(qNorm) {
   return /opd|ward|round|chief|schedule|ตาราง|ราวด์|วอร์ด|เมื่อไร|ช่วง|period|line|ไลน์|attending|นัด|กี่โมง|เวลา|slot|calendar|ดูงาน/.test(qNorm);
 }
@@ -635,27 +689,29 @@ function firstDayFaqBonus(qNorm, item) {
   return b;
 }
 
-function staticFirstDayBlock(wantTh) {
+function staticFirstDayBlock(wantTh, isDirectMode = false) {
   if (wantTh) {
-    return [
+    const lines = [
       'วันแรก / ก่อนเริ่มดูงาน (สรุปมาตรฐาน elective โลหิตวิทยา ศิริราช)',
       '',
       '• Add เข้ากลุ่ม LINE elective ก่อนวันมา และแนะนำตัวกับทีม',
       '• ดูตารางราวด์วอร์ด + ตาราง OPD ใน note ของกลุ่ม LINE',
       '• นัดเวลาและสถานที่ราวด์กับ chief resident',
       '• OPD ห้อง 700 ชั้น 7 — โดยทั่วไป ถึง ~9:00 น. ช่วงตรวจ ~9:00–12:00 น.',
-      '• เมื่อระบบ AI กลับมา สามารถถามตารางรายวัน/รายคนได้ละเอียดขึ้นจากข้อมูลในฐานข้อมูล',
-    ].join('\n');
+    ];
+    if (!isDirectMode) lines.push('• เมื่อระบบ AI กลับมา สามารถถามตารางรายวัน/รายคนได้ละเอียดขึ้นจากข้อมูลในฐานข้อมูล');
+    return lines.join('\n');
   }
-  return [
+  const lines = [
     'Before your first day (typical Hematology elective flow at Siriraj)',
     '',
     '• Join the elective LINE group before day one and introduce yourself to the team',
     '• Read ward round times and the OPD schedule in the LINE group notes',
     '• Confirm ward round time and place with the chief resident',
     '• OPD is usually room 700, 7th floor, OPD building (~arrive ~9:00; clinic ~9:00–12:00)',
-    '• When the AI is back, ask again for person‑specific dates from the roster data',
-  ].join('\n');
+  ];
+  if (!isDirectMode) lines.push('• When the AI is back, ask again for person\u2011specific dates from the roster data');
+  return lines.join('\n');
 }
 
 function intentLikelyGeneralActivity(qNorm) {
@@ -714,8 +770,79 @@ function shouldShowPersonalElectiveCard(qNorm, score) {
   return false;
 }
 
+function parseDateRangeToYmds(s) {
+  const text = String(s || '');
+  const hits = text.match(/\d{4}-\d{2}-\d{2}/g) || [];
+  if (hits.length >= 2) return [hits[0], hits[hits.length - 1]];
+  if (hits.length === 1) return [hits[0], hits[0]];
+  return [null, null];
+}
+
+function rangeOverlapDays(a1, a2, b1, b2) {
+  if (!a1 || !a2 || !b1 || !b2) return 0;
+  const toMs = (ymd) => {
+    const [y, m, d] = ymd.split('-').map(Number);
+    return Date.UTC(y, m - 1, d);
+  };
+  const A1 = toMs(a1);
+  const A2 = toMs(a2);
+  const B1 = toMs(b1);
+  const B2 = toMs(b2);
+  const start = Math.max(Math.min(A1, A2), Math.min(B1, B2));
+  const end = Math.min(Math.max(A1, A2), Math.max(B1, B2));
+  if (end < start) return 0;
+  return Math.floor((end - start) / 86400000) + 1;
+}
+
+function wardGender(val) {
+  const s = normQ(val);
+  if (!s) return null;
+  if (/(male|ชาย|men|man)/.test(s)) return 'male';
+  if (/(female|หญิง|women|woman)/.test(s)) return 'female';
+  return null;
+}
+
+function scoreDoctorRowForElective(e, d) {
+  let score = 0;
+  const eWard1 = normQ(e?.ward);
+  const eWard2 = normQ(e?.ward2);
+  const dWard1 = normQ(d?.ward1);
+  const dWard2 = normQ(d?.ward2);
+  if (eWard1 && dWard1 && eWard1 === dWard1) score += 35;
+  if (eWard1 && dWard2 && eWard1 === dWard2) score += 18;
+  if (eWard2 && dWard2 && eWard2 === dWard2) score += 22;
+  if (eWard2 && dWard1 && eWard2 === dWard1) score += 10;
+
+  // If ward labels differ (Thai/English), fall back to gender match.
+  const eg1 = wardGender(e?.ward);
+  const eg2 = wardGender(e?.ward2);
+  const dg1 = wardGender(d?.ward1);
+  const dg2 = wardGender(d?.ward2);
+  if (eg1 && dg1 && eg1 === dg1) score += 18;
+  if (eg1 && dg2 && eg1 === dg2) score += 10;
+  if (eg2 && dg2 && eg2 === dg2) score += 12;
+  if (eg2 && dg1 && eg2 === dg1) score += 6;
+
+  const [e1s, e1e] = parseDateRangeToYmds(e?.date_range);
+  const [e2s, e2e] = parseDateRangeToYmds(e?.date_range2);
+  const [d1s, d1e] = parseDateRangeToYmds(d?.period1_dates);
+  const [d2s, d2e] = parseDateRangeToYmds(d?.period2_dates);
+  const ov1 = rangeOverlapDays(e1s, e1e, d1s, d1e);
+  const ov2 = rangeOverlapDays(e2s, e2e, d2s, d2e);
+  if (ov1) score += Math.min(50, ov1 * 4);
+  if (ov2) score += Math.min(35, ov2 * 3);
+
+  // Bonus: row actually has chief/link info
+  if (String(d?.chief1_name || '').trim()) score += 8;
+  if (String(d?.chief1_link || '').trim()) score += 8;
+  if (String(d?.chief2_name || '').trim()) score += 4;
+  if (String(d?.chief2_link || '').trim()) score += 4;
+  return score;
+}
+
 function findDoctorForElective(e, doctors) {
   if (!doctors || !e) return null;
+  // 1) Exact-ish name match (fast path)
   const targets = [normQ(e.name), normQ(e.name_en)].filter((t) => t && t.length >= 2);
   for (const d of doctors) {
     const dn = normQ(d.name);
@@ -724,7 +851,17 @@ function findDoctorForElective(e, doctors) {
       if (t && (dn.includes(t) || t.includes(dn))) return d;
     }
   }
-  return null;
+  // 2) Ward + date-range overlap match (more reliable for chief roster tables)
+  let best = null;
+  let bestScore = 0;
+  for (const d of doctors) {
+    const sc = scoreDoctorRowForElective(e, d);
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = d;
+    }
+  }
+  return bestScore >= 35 ? best : null;
 }
 
 function opdDateSortKey(r) {
@@ -775,23 +912,46 @@ function pickAttendingHint(d) {
   return '—';
 }
 
-function hasSecondPeriodBlock(e, d) {
-  return !!(
-    String(e?.date_range2 || '').trim() ||
-    String(e?.ward2 || '').trim() ||
-    String(d?.period2_dates || '').trim() ||
-    String(d?.ward2 || '').trim() ||
-    String(d?.chief2_name || '').trim()
-  );
+function pickChiefFromChiefsTable(chiefsRows, wardLabel) {
+  if (!chiefsRows || !chiefsRows.length) return null;
+  const g = wardGender(wardLabel);
+  const want =
+    g === 'male' ? ['male', 'm', 'men', 'ชาย'] :
+    g === 'female' ? ['female', 'f', 'women', 'หญิง'] :
+    [];
+
+  for (const r of chiefsRows) {
+    const name = String(r.chief_name || r.name || '').trim();
+    if (!name) continue;
+    if (!want.length) {
+      return { name, link: String(r.chief_link || r.line || r.line_id || r.contact || '').trim() || null };
+    }
+    const code = normQ(r.ward_code || r.ward || r.section || '');
+    if (want.some(w => code.includes(w))) {
+      return { name, link: String(r.chief_link || r.line || r.line_id || r.contact || '').trim() || null };
+    }
+  }
+  return null;
 }
 
-function formatElectiveScheduleCard(e, doctor, opdRows, wantTh) {
+/** แสดงรอบ 2 เฉพาะเมื่อมีช่วงวันที่รอบ 2 ใน DB — ไม่พิมพ์แค่ ward2 โดยไม่มีวันที่ */
+function hasSecondPeriodBlock(e, d) {
+  const p2dates =
+    String(e?.date_range2 ?? '').trim() || String(d?.period2_dates ?? '').trim();
+  return p2dates.length > 0 && p2dates !== '—';
+}
+
+function formatElectiveScheduleCard(e, doctor, chiefsRows, opdRows, wantTh) {
   const display = String(e.name_en || '').trim() || String(e.name || '').trim() || 'Elective';
   const level = String(e.level || doctor?.type || '').trim() || '—';
   const p1Dates = String(e.date_range || doctor?.period1_dates || '').trim() || '—';
   const p1Ward = String(e.ward || doctor?.ward1 || '').trim() || '—';
-  const chief1 = String(doctor?.chief1_name || '').trim() || '—';
-  const line1 = lineIdDisplay(doctor?.chief1_link);
+  const chiefFallback = pickChiefFromChiefsTable(chiefsRows, p1Ward);
+  const chief1 =
+    String(doctor?.chief1_name || '').trim() ||
+    String(chiefFallback?.name || '').trim() ||
+    '—';
+  const line1 = lineIdDisplay(doctor?.chief1_link || chiefFallback?.link);
   const attend = pickAttendingHint(doctor);
 
   const lines = [];
@@ -818,7 +978,7 @@ function formatElectiveScheduleCard(e, doctor, opdRows, wantTh) {
   }
 
   if (hasSecondPeriodBlock(e, doctor)) {
-    const p2d = String(e.date_range2 || doctor?.period2_dates || '').trim() || '—';
+    const p2d = String(e.date_range2 || doctor?.period2_dates || '').trim();
     const p2w = String(e.ward2 || doctor?.ward2 || '').trim() || '—';
     const ch2 = String(doctor?.chief2_name || '').trim() || '—';
     const ln2 = lineIdDisplay(doctor?.chief2_link);
@@ -860,18 +1020,81 @@ function tryPersonalElectiveScheduleBlock(rawQ, qNorm, schedule, wantTh) {
   if (!hit || !shouldShowPersonalElectiveCard(qNorm, hit.score)) return null;
   const doctor = findDoctorForElective(hit.elective, schedule.doctors || []);
   const opdRows = opdRowsForElectiveId(schedule, hit.elective.id);
-  return formatElectiveScheduleCard(hit.elective, doctor, opdRows, wantTh);
+  return formatElectiveScheduleCard(hit.elective, doctor, schedule.chiefs || [], opdRows, wantTh);
+}
+
+/* ── Human-readable schedule formatters ──────────────────────── */
+
+/** แปลง YYYY-MM-DD เป็น "14 May 2026" หรือ "14 พ.ค. 2569" */
+function ymdToHuman(ymd, wantTh) {
+  if (!ymd || ymd.length < 10) return ymd || '—';
+  const [y, mo, d] = ymd.split('-').map(Number);
+  const dt = new Date(y, mo - 1, d, 12);
+  try {
+    return dt.toLocaleDateString(wantTh ? 'th-TH' : 'en-GB', {
+      day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Bangkok',
+    });
+  } catch { return ymd; }
+}
+
+/** Format OPD rows เป็นประโยคอ่านได้ */
+function formatOpdBlock(rows, todayLabel, wantTh, isMonth = false) {
+  if (!rows || !rows.length) return '';
+  const title = isMonth
+    ? (wantTh ? '📅 ตาราง OPD เดือนนี้' : '📅 OPD Schedule this month')
+    : (wantTh ? `📅 OPD วันนี้ (${todayLabel || ''})` : `📅 OPD today (${todayLabel || ''})`);
+
+  const lines = [title];
+  for (const r of rows.slice(0, 30)) {
+    const dateRaw = r.date ?? r.opd_date ?? r.clinic_date ?? '';
+    const dateStr = ymdToHuman(cellToYmd(dateRaw), wantTh);
+    const sup = String(r.supervisor_name_en || r.supervisor_name || '').trim();
+    const elName = String(r.elective_names || '').trim();
+    const mode = String(r.opd_mode || '').trim();
+    const type = String(r.opd_type || '').trim();
+
+    let line = `• ${dateStr}`;
+    if (sup) line += wantTh ? ` — อาจารย์ ${sup}` : ` — with ${sup}`;
+    if (elName) line += wantTh ? ` (${elName})` : ` (${elName})`;
+    if (mode === 'solo') line += wantTh ? ' 🔵 solo' : ' 🔵 solo';
+    lines.push(line);
+  }
+  return lines.join('\n');
+}
+
+/** Format elective roster เป็นภาษาคน */
+function formatElectiveRosterBlock(electives, wantTh) {
+  if (!electives || !electives.length) return '';
+  const title = wantTh ? '👥 ผู้มาดูงาน elective ขณะนี้' : '👥 Current elective students';
+  const lines = [title, ''];
+  for (const e of electives.slice(0, 15)) {
+    const name = String(e.name || e.name_en || '').trim();
+    const hosp = String(e.from_hospital || '').trim();
+    const level = String(e.level || '').trim();
+    const ward = String(e.ward || '').trim();
+    const dateRange = String(e.date_range || '').trim();
+    if (!name) continue;
+    let line = `• ${name}`;
+    if (level) line += ` (${level})`;
+    if (hosp) line += wantTh ? ` จาก ${hosp}` : ` from ${hosp}`;
+    if (dateRange) line += ` — ${dateRange}`;
+    if (ward) line += wantTh ? ` | ward: ${ward}` : ` | ${ward}`;
+    lines.push(line);
+  }
+  return lines.join('\n');
 }
 
 /** คืนข้อความหรือ null ถ้าไม่มีอะไรจะตอบได้เลย */
-function fallbackReplyFromData(messages, schedule, faq) {
+function fallbackReplyFromData(messages, schedule, faq, isDirectMode = false) {
   const rawQ = lastUserText(messages);
   const qNorm = normQ(rawQ);
   const wantTh = rawQ === '' ? true : prefersThai(rawQ);
 
-  const head = wantTh
-    ? 'ตอนนี้เชื่อมต่อ AI ไม่ได้ จึงสรุปจากข้อมูลในระบบให้แบบย่อครับ:\n\n'
-    : 'The AI service is unavailable. Here is a short summary from our records:\n\n';
+  const head = isDirectMode
+    ? ''  // โหมด DB โดยตรง: ไม่แสดงข้อความ error AI
+    : (wantTh
+        ? 'ตอนนี้เชื่อมต่อ AI ไม่ได้ จึงสรุปจากข้อมูลในระบบให้แบบย่อครับ:\n\n'
+        : 'The AI service is unavailable. Here is a short summary from our records:\n\n');
 
   const hasSch = schedule && schedule.ok;
   const hasFaq = faq && faq.ok;
@@ -922,12 +1145,82 @@ function fallbackReplyFromData(messages, schedule, faq) {
         }
       }
     }
-    const out = head + staticFirstDayBlock(wantTh);
+    const out = head + staticFirstDayBlock(wantTh, isDirectMode);
     return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
   }
 
-  const chunks = [];
+  // ── 1. ตารางจาก DB ก่อน (กัน FAQ ทั่วไปมาทับคำถาม OPD/วอร์ด) ───
+  // ── 1a. OPD วันนี้ / เดือนนี้ ─────────────────────────────────
+  if (hasSch && intentOpdToday(qNorm, rawQ)) {
+    if (schedule.opdToday && schedule.opdToday.length) {
+      const out = head + formatOpdBlock(schedule.opdToday, schedule.today, wantTh);
+      return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
+    }
+    const emptyMsg = wantTh
+      ? `📅 OPD วันนี้ (${schedule.today})\n\nยังไม่มีรายการ OPD สำหรับวันนี้ในฐานข้อมูลครับ (หรือวันที่ในระบบไม่ตรงกับวันนี้)`
+      : `📅 OPD today (${schedule.today})\n\nNo OPD rows for today in the database (or dates may not match).`;
+    const out = head + emptyMsg;
+    return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
+  }
+  if (hasSch && intentOpdMonth(qNorm)) {
+    if (schedule.opdMonth && schedule.opdMonth.length) {
+      const out = head + formatOpdBlock(schedule.opdMonth, null, wantTh, true);
+      return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
+    }
+    const emptyMsg = wantTh
+      ? '📅 ตาราง OPD เดือนนี้\n\nยังไม่มีรายการในฐานข้อมูลสำหรับเดือนนี้ครับ'
+      : '📅 OPD this month\n\nNo rows in the database for this month.';
+    const out = head + emptyMsg;
+    return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
+  }
 
+  // ── 1b. "ใครมา elective บ้าง" ───────────────────────────────
+  if (hasSch && intentElectiveRoster(qNorm) && schedule.electives && schedule.electives.length) {
+    const out = head + formatElectiveRosterBlock(schedule.electives, wantTh);
+    return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
+  }
+
+  // ── 1c. เวลาราวด์วอร์ด (แยกจากรายชื่อ chief — DB ไม่มีฟิลด์เวลา) ──
+  if (intentWardRoundTimeQuestion(qNorm)) {
+    if (hasFaq && faq.items && faq.items.length) {
+      const ranked = faq.items
+        .map((it) => ({ it, s: scoreFaqItem(qNorm, it) + wardRoundTimeFaqBonus(qNorm, it) }))
+        .filter((x) => x.s > 0)
+        .sort((a, b) => b.s - a.s);
+      if (ranked.length && ranked[0].s >= 8) {
+        const it = ranked[0].it;
+        const ans = wantTh
+          ? String(it.answer_th ?? '').trim() || String(it.answer_en ?? '').trim()
+          : String(it.answer_en ?? '').trim() || String(it.answer_th ?? '').trim();
+        if (ans) {
+          const out = head + ans;
+          return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
+        }
+      }
+    }
+    const out = head + staticWardRoundTimeBlock(wantTh, isDirectMode);
+    return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
+  }
+
+  // ── 1d. ward / chief (เมื่อไม่ได้ถามแค่เวลาราวด์) ─────────────
+  if (hasSch && intentWardOrRound(qNorm)) {
+    const parts = [];
+    if (schedule.ward && schedule.ward.length) {
+      parts.push(formatPublicRows(schedule.ward, 20));
+    }
+    if (schedule.chiefs && schedule.chiefs.length) {
+      const ch = schedule.chiefs.map(r =>
+        `• ${r.ward_code || r.ward || ''} — Chief: ${r.chief_name || r.name || '—'}${r.month ? ' (' + r.month + ')' : ''}`
+      ).join('\n');
+      parts.push((wantTh ? 'Chief รายเดือน:\n' : 'Chiefs:\n') + ch);
+    }
+    if (parts.length) {
+      const out = head + parts.join('\n\n');
+      return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
+    }
+  }
+
+  // ── 2. FAQ ทั่วไป (หลังจัดการคำถามตารางแล้ว — ไม่ให้ทับ OPD วันนี้) ──
   if (hasFaq && faq.items && faq.items.length) {
     const ranked = faq.items
       .map((it) => ({ it, s: scoreFaqItem(qNorm, it) }))
@@ -939,102 +1232,33 @@ function fallbackReplyFromData(messages, schedule, faq) {
         ? String(it.answer_th ?? '').trim() || String(it.answer_en ?? '').trim()
         : String(it.answer_en ?? '').trim() || String(it.answer_th ?? '').trim();
       if (ans) {
-        chunks.push(ans);
-        const out = head + chunks.join('\n\n');
-        return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
-      }
-    }
-    if (ranked.length && ranked[0].s >= 5) {
-      const top = ranked.slice(0, 3);
-      for (let i = 0; i < top.length; i++) {
-        const it = top[i].it;
-        const tag = wantTh ? (it.tag_th || it.tag_en) : (it.tag_en || it.tag_th);
-        const ans = wantTh
-          ? String(it.answer_th ?? '').trim() || String(it.answer_en ?? '').trim()
-          : String(it.answer_en ?? '').trim() || String(it.answer_th ?? '').trim();
-        if (ans) chunks.push(`${i + 1}) ${tag ? `[${tag}] ` : ''}${ans}`);
-      }
-      if (chunks.length) {
-        const out = head + chunks.join('\n\n');
+        const out = head + ans;
         return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
       }
     }
   }
 
-  if (hasSch) {
-    if (intentOpdToday(qNorm, rawQ) && schedule.opdToday && schedule.opdToday.length) {
-      const block = formatPublicRows(schedule.opdToday, 40);
-      chunks.push(
-        wantTh ? `[OPD วันนี้ ${schedule.today}]\n${block}` : `[OPD today ${schedule.today}]\n${block}`
-      );
-    } else if (intentOpdMonth(qNorm) && schedule.opdMonth && schedule.opdMonth.length) {
-      chunks.push(
-        wantTh
-          ? `[OPD เดือนนี้ (บางรายการ)]\n${formatPublicRows(schedule.opdMonth, 35)}`
-          : `[OPD this month (partial)]\n${formatPublicRows(schedule.opdMonth, 35)}`
-      );
-    } else if (intentElectiveRoster(qNorm) && schedule.electives && schedule.electives.length) {
-      chunks.push(
-        wantTh
-          ? `[ผู้มา elective]\n${formatPublicRows(schedule.electives, 40)}`
-          : `[Elective students]\n${formatPublicRows(schedule.electives, 40)}`
-      );
-    } else if (intentWardOrRound(qNorm)) {
-      if (schedule.ward && schedule.ward.length) {
-        chunks.push(
-          wantTh ? `[Ward]\n${formatPublicRows(schedule.ward, 30)}` : `[Ward]\n${formatPublicRows(schedule.ward, 30)}`
-        );
-      }
-      if (schedule.chiefs && schedule.chiefs.length) {
-        chunks.push(
-          wantTh ? `[Chief รายเดือน]\n${formatPublicRows(schedule.chiefs, 25)}` : `[Chiefs]\n${formatPublicRows(schedule.chiefs, 25)}`
-        );
-      }
-    }
+  // ── 3. ไม่ match ตาราง/FAQ ชัดเจน: แนะนำให้ถามชื่อคน ────────────
+  // ไม่ dump ข้อมูลทั้งหมด — ให้ถามชื่อที่ต้องการ
+  const nameList = hasSch
+    ? (schedule.electives || []).slice(0, 10)
+        .map(e => String(e.name || e.name_en || '').trim())
+        .filter(Boolean)
+    : [];
+
+  let helpMsg;
+  if (nameList.length) {
+    const listStr = nameList.map(n => `• ${n}`).join('\n');
+    helpMsg = wantTh
+      ? `ถามชื่อผู้มาดูงานได้เลยครับ เช่น "ไมตรี" หรือ "John" เพื่อดูตารางเฉพาะของเขา\n\nรายชื่อที่มีในระบบ:\n${listStr}\n\nหรือถามว่า "วันนี้ใครออก OPD?" / "ใครมา elective บ้าง?"`
+      : `Ask me a name to see that person's schedule, e.g. "John" or "Maytree".\n\nNames currently in the system:\n${listStr}\n\nOr ask "Who is on OPD today?" or "Who is on elective now?"`;
+  } else {
+    helpMsg = wantTh
+      ? 'ถามเรื่องตาราง elective ได้เลยครับ เช่น "วันนี้ใครออก OPD?" หรือ "ใครมา elective บ้าง?"'
+      : 'Ask "Who is on OPD today?" or "Who is on elective now?" to see the schedule.';
   }
 
-  if (!chunks.length && hasFaq && faq.items && faq.items.length) {
-    const ranked = faq.items
-      .map((it) => ({ it, s: scoreFaqItem(qNorm, it) }))
-      .sort((a, b) => b.s - a.s);
-    const pick = ranked.filter((x) => x.s > 0).slice(0, 2);
-    for (let i = 0; i < pick.length; i++) {
-      const it = pick[i].it;
-      const ans = wantTh
-        ? String(it.answer_th ?? '').trim() || String(it.answer_en ?? '').trim()
-        : String(it.answer_en ?? '').trim() || String(it.answer_th ?? '').trim();
-      if (ans) chunks.push(ans);
-    }
-  }
-
-  if (!chunks.length && hasSch) {
-    const sub = [];
-    if (schedule.opdToday && schedule.opdToday.length) {
-      sub.push(
-        wantTh
-          ? `[OPD วันนี้]\n${formatPublicRows(schedule.opdToday, 25)}`
-          : `[OPD today]\n${formatPublicRows(schedule.opdToday, 25)}`
-      );
-    }
-    if (schedule.electives && schedule.electives.length) {
-      sub.push(
-        wantTh
-          ? `[ผู้มา elective]\n${formatPublicRows(schedule.electives, 20)}`
-          : `[Electives]\n${formatPublicRows(schedule.electives, 20)}`
-      );
-    }
-    if (sub.length) chunks.push(sub.join('\n\n'));
-  }
-
-  if (!chunks.length) {
-    chunks.push(
-      wantTh
-        ? 'จับคำถามกับข้อมูลในระบบไม่ตรงชัดเจน — ลองถามเช่น "วันนี้ใครออก OPD?" หรือ "ตอนนี้มี elective ใครบ้าง?" หรือถามเรื่องกิจกรรม elective เป็นประโยคสั้นๆ อีกครั้งนะครับ'
-        : 'Try a short question such as who is on OPD today or who is on elective, and we will match it to the database.'
-    );
-  }
-
-  const out = head + chunks.join('\n\n');
+  const out = head + helpMsg;
   return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
 }
 
