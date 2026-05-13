@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hemato Bot 🩸</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🩸</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600&family=Playfair+Display:wght@600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --red:     #9b1c1c;
+  --red-l:   #fef2f2;
+  --red-b:   #fecaca;
+  --green:   #1d6a45;
+  --green-l: #f0faf4;
+  --green-b: #bbddd0;
+  --bg:      #fafaf8;
+  --card:    #ffffff;
+  --border:  #e8e3dc;
+  --muted:   #888;
+  --text:    #1a1a1a;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; font-family: 'Sarabun', sans-serif; background: var(--bg); color: var(--text); }
+
+/* ── Shell ── */
+.shell {
+  display: flex; flex-direction: column;
+  height: 100dvh; max-width: 680px;
+  margin: 0 auto; background: var(--card);
+  box-shadow: 0 0 60px rgba(0,0,0,.07);
+}
+
+/* ── Header ── */
+header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; background: var(--red); color: #fff; flex-shrink: 0;
+}
+.h-av {
+  width: 38px; height: 38px; border-radius: 50%;
+  background: rgba(255,255,255,.18);
+  display: grid; place-items: center; font-size: 19px; flex-shrink: 0;
+}
+.h-txt h1 { font-family: 'Playfair Display', serif; font-size: .98rem; }
+.h-txt p  { font-size: .71rem; opacity: .8; margin-top: 1px; }
+.h-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: #4ade80;
+  margin-left: auto; flex-shrink: 0;
+  box-shadow: 0 0 0 3px rgba(74,222,128,.25);
+  animation: blink 2.5s infinite;
+}
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+/* ── Settings ── */
+.settings {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  padding: 9px 14px; background: #fdf8f8;
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.settings label { font-size: .75rem; color: var(--muted); white-space: nowrap; font-weight: 600; }
+.settings select {
+  border: 1.5px solid var(--border); border-radius: 8px;
+  padding: 4px 8px; font-family: 'Sarabun', sans-serif;
+  font-size: .83rem; background: #fff; outline: none;
+  transition: border-color .15s; cursor: pointer;
+}
+.settings select:focus { border-color: var(--red); }
+#keyRow {
+  display: none; gap: 6px; align-items: center; flex: 1; min-width: 180px;
+}
+#keyInput {
+  flex: 1; border: 1.5px solid var(--border); border-radius: 8px;
+  padding: 4px 10px; font-family: 'Sarabun', sans-serif;
+  font-size: .83rem; background: #fff; outline: none;
+  transition: border-color .15s;
+}
+#keyInput:focus { border-color: var(--red); }
+.save-btn {
+  padding: 4px 12px; background: var(--red); color: #fff;
+  border: none; border-radius: 8px; font-family: 'Sarabun', sans-serif;
+  font-size: .83rem; cursor: pointer; white-space: nowrap;
+}
+.save-btn:hover { background: #7f1d1d; }
+.settings-note { font-size: .68rem; color: #bbb; width: 100%; }
+
+/* ── Messages ── */
+.msgs {
+  flex: 1; overflow-y: auto; padding: 14px 12px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.msgs::-webkit-scrollbar { width: 3px; }
+.msgs::-webkit-scrollbar-thumb { background: #ddd; border-radius: 2px; }
+
+/* Welcome */
+.welcome { text-align: center; padding: 18px 8px 8px; animation: up .4s ease; }
+.welcome .ico { font-size: 3rem; margin-bottom: 8px; }
+.welcome h2 {
+  font-family: 'Playfair Display', serif; font-size: 1.25rem;
+  color: var(--red); margin-bottom: 6px;
+}
+.welcome p { font-size: .86rem; color: var(--muted); line-height: 1.75; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 14px; }
+.chip {
+  padding: 6px 13px; border: 1.5px solid var(--border);
+  border-radius: 20px; background: #fff; color: var(--green);
+  font-size: .78rem; font-family: 'Sarabun', sans-serif;
+  cursor: pointer; transition: all .15s;
+}
+.chip:hover { background: var(--green); color: #fff; border-color: var(--green); }
+
+/* Bubble */
+.row { display: flex; gap: 8px; animation: up .25s ease; }
+.row.user { flex-direction: row-reverse; }
+@keyframes up { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+
+.av {
+  width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+  display: grid; place-items: center; font-size: 14px; margin-top: 2px;
+  border: 1.5px solid var(--border); background: var(--green-l);
+}
+.row.user .av { background: var(--red); border-color: var(--red); }
+
+.bcol { display: flex; flex-direction: column; gap: 3px; max-width: 80%; }
+.bubble {
+  padding: 9px 13px; border-radius: 16px;
+  font-size: .88rem; line-height: 1.72;
+  white-space: pre-wrap; word-break: break-word;
+}
+.row.bot .bubble {
+  background: var(--green-l); border: 1px solid var(--green-b);
+  border-bottom-left-radius: 4px;
+}
+.row.user .bubble {
+  background: var(--red); color: #fff;
+  border-bottom-right-radius: 4px;
+}
+.lbl { font-size: .66rem; color: var(--muted); padding-left: 2px; }
+
+/* Typing */
+.typing .bubble { display: flex; gap: 5px; align-items: center; padding: 12px 16px; }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: #bbb; animation: bo .9s infinite; }
+.dot:nth-child(2){ animation-delay:.15s } .dot:nth-child(3){ animation-delay:.3s }
+@keyframes bo { 0%,80%,100%{transform:translateY(0)} 40%{transform:translateY(-5px)} }
+
+.err {
+  background: var(--red-l); border: 1px solid var(--red-b);
+  color: var(--red); border-radius: 12px; padding: 9px 13px; font-size: .84rem;
+}
+
+/* ── Input ── */
+.bar {
+  padding: 10px 12px; border-top: 1px solid var(--border);
+  background: #fff; display: flex; gap: 8px; align-items: flex-end; flex-shrink: 0;
+}
+.bar textarea {
+  flex: 1; resize: none; max-height: 110px; overflow-y: auto;
+  border: 1.5px solid var(--border); border-radius: 12px;
+  padding: 8px 12px; font-family: 'Sarabun', sans-serif;
+  font-size: .91rem; line-height: 1.5; outline: none;
+  background: var(--bg); color: var(--text);
+  transition: border-color .15s;
+}
+.bar textarea:focus { border-color: var(--green); }
+.bar textarea::placeholder { color: #bbb; }
+.send {
+  width: 40px; height: 40px; border-radius: 50%;
+  background: var(--green); border: none; color: #fff;
+  font-size: 16px; cursor: pointer; display: grid; place-items: center;
+  flex-shrink: 0; transition: background .15s, transform .1s;
+}
+.send:hover  { background: #155234; }
+.send:active { transform: scale(.91); }
+.send:disabled { background: #ccc; cursor: default; }
+
+.mode {
+  text-align: center; font-size: .7rem; color: var(--muted);
+  padding: 3px 0 2px; background: #fff;
+  border-top: 1px solid #f0ede8; flex-shrink: 0;
+}
+.mode b { color: var(--red); }
+</style>
+</head>
+<body>
+<div class="shell">
+
+<!-- Header -->
+<header>
+  <div class="h-av">🩸</div>
+  <div class="h-txt">
+    <h1>Hemato Bot</h1>
+    <p>สาขาวิชาโลหิตวิทยา · โรงพยาบาลสงฆ์</p>
+  </div>
+  <div class="h-dot"></div>
+</header>
+
+<!-- Settings -->
+<div class="settings">
+  <label>AI:</label>
+  <select id="prov" onchange="onProv()">
+    <option value="groq">🆓 Groq (ฟรี — ไม่ต้องใส่ key)</option>
+    <option value="openai">💳 OpenAI GPT-4o (ใส่ key)</option>
+    <option value="gemini">💳 Google Gemini (ใส่ key)</option>
+  </select>
+  <div id="keyRow">
+    <input type="password" id="keyInput" placeholder="sk-... หรือ AIza...">
+    <button class="save-btn" onclick="saveKey()">บันทึก</button>
+  </div>
+  <div class="settings-note">🔒 API key เก็บใน browser ของคุณเท่านั้น</div>
+</div>
+
+<!-- Messages -->
+<div class="msgs" id="msgs">
+  <div class="welcome" id="welcome">
+    <div class="ico">🩸</div>
+    <h2>Hemato Bot</h2>
+    <p>ถามได้เลยเกี่ยวกับกิจกรรม Elective โลหิตวิทยา<br>
+       ตาราง OPD · วอร์ด · ใครดูงานอยู่บ้าง<br>
+       <em style="font-size:.8rem;color:#aaa">Ask in English — I'll reply in English!</em></p>
+    <div class="chips">
+      <button class="chip" onclick="q('วันแรกต้องทำอะไรบ้าง?')">วันแรกต้องทำอะไร?</button>
+      <button class="chip" onclick="q('ราวด์วอร์ดกี่โมง?')">ราวด์วอร์ดกี่โมง?</button>
+      <button class="chip" onclick="q('OPD อยู่ที่ไหน เวลาไหน?')">OPD อยู่ที่ไหน?</button>
+      <button class="chip" onclick="q('ตอนนี้มี elective ใครบ้าง?')">Elective ใครอยู่บ้าง?</button>
+      <button class="chip" onclick="q('วันนี้ใครออก OPD?')">OPD วันนี้ใคร?</button>
+      <button class="chip" onclick="q('Who is on OPD today?')">OPD today?</button>
+      <button class="chip" onclick="q('Conference มีกิจกรรมอะไรบ้าง?')">Conference มีอะไร?</button>
+      <button class="chip" onclick="q('เสร็จดูงานต้องทำอะไรบ้าง?')">เสร็จดูงานต้องทำอะไร?</button>
+    </div>
+  </div>
+</div>
+
+<div class="mode">ใช้: <b id="modeLabel">Groq (ฟรี)</b></div>
+
+<!-- Input -->
+<div class="bar">
+  <textarea id="box" rows="1"
+    placeholder="ถามได้เลยครับ… / Ask anything…"
+    onkeydown="onKey(event)" oninput="resize(this)"></textarea>
+  <button class="send" id="sendBtn" onclick="send()">➤</button>
+</div>
+
+</div><!-- /shell -->
+
+<script>
+const API   = '/api/chat';
+const STORE = 'hemato_bot_cfg';
+let hist  = [];
+let busy  = false;
+
+/* ── Settings ── */
+function cfg()     { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch { return {}; } }
+function setCfg(o) { localStorage.setItem(STORE, JSON.stringify(o)); }
+
+function onProv() {
+  const v = document.getElementById('prov').value;
+  const needKey = v === 'openai' || v === 'gemini';
+  document.getElementById('keyRow').style.display = needKey ? 'flex' : 'none';
+  const inp = document.getElementById('keyInput');
+  if (v === 'openai') {
+    inp.placeholder = 'sk-proj-... หรือ sk-...';
+    document.getElementById('modeLabel').textContent = 'OpenAI GPT-4o';
+  } else if (v === 'gemini') {
+    inp.placeholder = 'AIza... (Google AI Studio)';
+    document.getElementById('modeLabel').textContent = 'Google Gemini 2.0 Flash';
+  } else {
+    inp.placeholder = '—';
+    document.getElementById('modeLabel').textContent = 'Groq llama-3.3-70b (ฟรี)';
+  }
+  const c = cfg(); c.provider = v; setCfg(c);
+}
+
+function saveKey() {
+  const k = document.getElementById('keyInput').value.trim();
+  const c = cfg(); c.apiKey = k; setCfg(c);
+  bot('✅ บันทึก API key แล้วครับ');
+}
+
+(function init() {
+  const c = cfg();
+  if (c.provider === 'anthropic') {
+    c.provider = 'groq';
+    delete c.apiKey;
+    setCfg(c);
+  }
+  if (c.provider) {
+    document.getElementById('prov').value = c.provider;
+    onProv();
+  }
+  if (c.apiKey) document.getElementById('keyInput').value = c.apiKey;
+})();
+
+/* ── DOM ── */
+const $msgs = () => document.getElementById('msgs');
+
+function rmWelcome() {
+  const w = document.getElementById('welcome');
+  if (w) w.remove();
+}
+
+function addUser(t) {
+  rmWelcome();
+  add(`<div class="av" style="color:#fff">👤</div>
+       <div class="bcol"><div class="bubble">${esc(t)}</div></div>`, 'user');
+}
+
+function bot(t, lbl = '') {
+  add(`<div class="av">🩸</div>
+       <div class="bcol">
+         <div class="bubble">${esc(t)}</div>
+         ${lbl ? `<div class="lbl">via ${esc(lbl)}</div>` : ''}
+       </div>`, 'bot');
+}
+
+function addTyping() {
+  const r = mk('bot typing'); r.id = 'typing';
+  r.innerHTML = `<div class="av">🩸</div>
+    <div class="bcol"><div class="bubble">
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    </div></div>`;
+  $msgs().appendChild(r); scroll();
+}
+
+function rmTyping() { const e = document.getElementById('typing'); if (e) e.remove(); }
+
+function addErr(m) {
+  const d = document.createElement('div');
+  d.className = 'err'; d.textContent = '⚠️ ' + m;
+  $msgs().appendChild(d); scroll();
+}
+
+function add(html, cls) {
+  const r = mk(cls); r.innerHTML = html;
+  $msgs().appendChild(r); scroll();
+}
+
+function mk(cls) {
+  const r = document.createElement('div');
+  r.className = 'row ' + cls; return r;
+}
+
+function scroll() { const m = $msgs(); m.scrollTop = m.scrollHeight; }
+
+function setBusy(v) {
+  busy = v;
+  document.getElementById('sendBtn').disabled = v;
+  document.getElementById('box').disabled     = v;
+}
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/\n/g,'<br>');
+}
+
+/* ── Send ── */
+async function send() {
+  const box  = document.getElementById('box');
+  const text = box.value.trim();
+  if (!text || busy) return;
+
+  box.value = ''; resize(box);
+  addUser(text);
+  hist.push({ role: 'user', content: text });
+  addTyping();
+  setBusy(true);
+
+  try {
+    const c   = cfg();
+    const res = await fetch(API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: hist.slice(-14),
+        provider: c.provider || 'groq',
+        apiKey:
+          c.provider === 'openai' || c.provider === 'gemini' ? c.apiKey : undefined,
+      }),
+    });
+    const d = await res.json();
+    rmTyping();
+
+    if (d.error) {
+      addErr(d.error);
+    } else {
+      hist.push({ role: 'assistant', content: d.reply });
+      const lbl =
+        c.provider === 'openai' ? 'OpenAI gpt-4o'
+        : c.provider === 'gemini' ? 'Google Gemini 2.0 Flash'
+        : 'Groq llama-3.3-70b';
+      bot(d.reply, lbl);
+    }
+  } catch (e) {
+    rmTyping();
+    addErr('ไม่สามารถเชื่อมต่อได้: ' + e.message);
+  }
+
+  setBusy(false);
+}
+
+function q(t)     { document.getElementById('box').value = t; send(); }
+function onKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }
+function resize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 110) + 'px';
+}
+</script>
+</body>
+</html>
