@@ -4,6 +4,10 @@
  * ENV ตั้งใน Cloudflare Pages → Settings → Environment variables:
  *   GROQ_API_KEY     gsk_...     (สมัครฟรี console.groq.com)
  *
+ * SambaNova Cloud (OpenAI-compatible, ต้องมี key — cloud.sambanova.ai)
+ *   SAMBANOVA_API_KEY
+ *   SAMBANOVA_MODEL  (ทางเลือก เช่น Meta-Llama-3.3-70B-Instruct)
+ *
  * ทางเลือก (ถ้าไม่ให้ user ใส่ key ใน browser):
  *   OPENAI_API_KEY   sk-...      (OpenAI)
  *   GEMINI_API_KEY   AIza...     (Google AI Studio)
@@ -46,6 +50,9 @@ export async function onRequestPost({ request, env }) {
     } else if (provider === 'gemini') {
       const key = apiKey || env.GEMINI_API_KEY;
       reply = await callGemini(messages, system, key);
+    } else if (provider === 'sambanova') {
+      const key = apiKey || env.SAMBANOVA_API_KEY;
+      reply = await callSambaNova(messages, system, key, env);
     } else {
       reply = await callGroq(messages, system, env.GROQ_API_KEY);
     }
@@ -287,7 +294,16 @@ async function queryFaqTurso(env) {
   return { ok: true, items, config };
 }
 
-/* ── System prompt ─────────────────────────────────────────── */
+/* ── System prompt (ย่อ token ต่อรอบ = คุยต่อได้นานขึ้น / ลดโควตา) ── */
+const SYS_MAX_CELL = 200;
+const SYS_MAX_FAQ_ANSWER = 420;
+
+function truncSys(s, max) {
+  const t = String(s ?? '');
+  if (t.length <= max) return t;
+  return t.slice(0, max) + '…';
+}
+
 function buildSystem({ schedule, faq }) {
   const hiddenKeys = new Set([
     'id', 'key', 'pin', 'line_user_id', 'created_by', 'created_at', 'updated_at',
@@ -304,7 +320,7 @@ function buildSystem({ schedule, faq }) {
     return arr.map(r =>
       '  • ' + Object.entries(r)
         .filter(([k, v]) => isPublicKey(k) && v !== null && v !== '')
-        .map(([k, v]) => `${k}: ${v}`)
+        .map(([k, v]) => `${k}: ${typeof v === 'string' ? truncSys(v, SYS_MAX_CELL) : v}`)
         .join(' | ')
     ).join('\n');
   };
@@ -312,8 +328,8 @@ function buildSystem({ schedule, faq }) {
   const formatFaqItems = (list) => {
     if (!list || list.length === 0) return '  (ไม่มีรายการ)';
     return list.map((it, i) => {
-      const th = String(it.answer_th ?? '').trim();
-      const en = String(it.answer_en ?? '').trim();
+      const th = truncSys(String(it.answer_th ?? '').trim(), SYS_MAX_FAQ_ANSWER);
+      const en = truncSys(String(it.answer_en ?? '').trim(), SYS_MAX_FAQ_ANSWER);
       return [
         `  [${i + 1}] ${it.tag_th ?? ''} / ${it.tag_en ?? ''}`,
         `      ตอบ (TH):\n${th.split('\n').map(l => '        ' + l).join('\n')}`,
@@ -377,7 +393,13 @@ RULES:
 
 ${scheduleSection}
 ${faqSection}
-=== เนื้อหากิจกรรม Elective โลหิตวิทยา (สรุป — ใช้เมื่อ DB #2 ไม่มีหรือไม่ครอบคลุม) ===
+${faq.ok ? `
+=== สรุป elective (ใช้เมื่อคำถาม–คำตอบด้านบนยังไม่ครอบคลุม) ===
+• ตารางราวด์ / OPD ดูใน note กลุ่ม LINE elective
+• OPD ห้อง 700 ชั้น 7 — ถึง ~9:00 น. ตรวจ ~9:00–12:00 น.
+• Feedback: https://docs.google.com/forms/d/e/1FAIpQLSeHPePaS04OyV44_Uh3Hw1ifGKNaO5nK6tMqtXP_b-trJMffw/viewform
+` : `
+=== เนื้อหากิจกรรม Elective โลหิตวิทยา (สรุป — ใช้เมื่อไม่มีบล็อกคำถาม–คำตอบด้านบน) ===
 
 [ก่อนมาดูงาน]
 • Add เข้ากลุ่ม LINE elective ก่อนวันมา แนะนำตัวกับทีม
@@ -419,6 +441,7 @@ Blood products, Thalassemia, Bleeding/Thrombosis, Lymphoma
 1. กรอก Google Form reflection/feedback
 2. Leave LINE group ได้เลย
 Link: https://docs.google.com/forms/d/e/1FAIpQLSeHPePaS04OyV44_Uh3Hw1ifGKNaO5nK6tMqtXP_b-trJMffw/viewform
+`}
 `.trim();
 }
 
@@ -437,6 +460,26 @@ async function callGroq(messages, system, key) {
     }),
   });
   if (!r.ok) throw new Error(`Groq: ${await r.text()}`);
+  return (await r.json()).choices?.[0]?.message?.content ?? '(ไม่ได้รับคำตอบ)';
+}
+
+async function callSambaNova(messages, system, key, env) {
+  if (!key) {
+    throw new Error(
+      'ต้องใส่ SambaNova API key ในหน้าเว็บ (บันทึก) หรือตั้ง SAMBANOVA_API_KEY บนเซิร์ฟเวอร์ — สมัครที่ https://cloud.sambanova.ai/'
+    );
+  }
+  const model = env.SAMBANOVA_MODEL || 'Meta-Llama-3.3-70B-Instruct';
+  const r = await fetch('https://api.sambanova.ai/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      max_tokens: 1024,
+      messages: [{ role: 'system', content: system }, ...messages],
+    }),
+  });
+  if (!r.ok) throw new Error(`SambaNova: ${await r.text()}`);
   return (await r.json()).choices?.[0]?.message?.content ?? '(ไม่ได้รับคำตอบ)';
 }
 
