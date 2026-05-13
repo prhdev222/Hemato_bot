@@ -5,7 +5,7 @@
  *   GROQ_API_KEY     gsk_...     (สมัครฟรี console.groq.com)
  *
  * SambaNova Cloud (OpenAI-compatible — key ตั้งที่ Cloudflare เท่านั้น ไม่รับจากหน้าเว็บ)
- *   SAMBANOVA_API_KEY
+ *   SAMBANOVA_API_KEY   หรือ SAMBANOVA_KEY (ทางเลือก ชื่อสั้น)
  *   SAMBANOVA_MODEL  (ทางเลือก เช่น Meta-Llama-3.3-70B-Instruct)
  *
  * ทางเลือก (ถ้าไม่ให้ user ใส่ key ใน browser):
@@ -40,6 +40,35 @@ function effectiveApiKey(clientKey, envKey) {
   if (c) return c;
   const e = envKey == null ? '' : String(envKey).trim();
   return e;
+}
+
+/** ตัด BOM / ช่องว่างมองไม่เห็น ปลายข้อความ (มักเกิดตอนวาง key จาก clipboard ใน Cloudflare) */
+function stripSecret(raw) {
+  if (raw == null) return '';
+  return String(raw)
+    .replace(/^\uFEFF/, '')
+    .replace(/^[\s\u200B-\u200D]+|[\s\u200B-\u200D]+$/g, '')
+    .trim();
+}
+
+/**
+ * อ่านค่าจาก env ตามชื่อที่ระบุ + เทียบแบบไม่สนตัวพิมพ์ของชื่อ key
+ * (กันพิมพ์ชื่อผิดเช่น sambanova_api_key ในแดชบอร์ด)
+ */
+function readEnvSecretFlexible(env, ...canonicalKeys) {
+  if (!env || typeof env !== 'object') return '';
+  for (const key of canonicalKeys) {
+    const s = stripSecret(env[key]);
+    if (s) return s;
+  }
+  const want = new Set(canonicalKeys.map((k) => k.toUpperCase()));
+  for (const name of Object.keys(env)) {
+    if (want.has(String(name).toUpperCase())) {
+      const s = stripSecret(env[name]);
+      if (s) return s;
+    }
+  }
+  return '';
 }
 
 const SYSTEM_HIDDEN_KEYS = new Set([
@@ -81,7 +110,7 @@ export async function onRequestPost({ request, env }) {
         const key = effectiveApiKey(apiKey, env.GEMINI_API_KEY);
         reply = await callGemini(messages, system, key);
       } else if (provider === 'sambanova') {
-        const k = env.SAMBANOVA_API_KEY == null ? '' : String(env.SAMBANOVA_API_KEY).trim();
+        const k = readEnvSecretFlexible(env, 'SAMBANOVA_API_KEY', 'SAMBANOVA_KEY');
         reply = await callSambaNova(messages, system, k, env);
       } else if (provider === 'openrouter') {
         const key = effectiveApiKey(apiKey, env.OPENROUTER_API_KEY);
@@ -732,14 +761,16 @@ async function callGroq(messages, system, key) {
 async function callSambaNova(messages, system, key, env) {
   if (!key) {
     throw new Error(
-      'ไม่พบ SAMBANOVA_API_KEY บนเซิร์ฟเวอร์\n\n' +
-      '• Cloudflare: Workers & Pages → เลือก Pages project นี้ → Settings → Variables and secrets → Production\n' +
-      '• ชื่อตัวแปรต้องเป็น SAMBANOVA_API_KEY (ตัวพิมพ์ใหญ่)\n' +
-      '• หลังเพิ่มหรือแก้ไข ให้ Retry deployment หนึ่งครั้ง\n\n' +
-      'ผู้ดูแลโปรเจกต์สมัคร key ได้ที่ https://cloud.sambanova.ai/'
+      'ไม่พบ SambaNova API key ใน env ของฟังก์ชันนี้\n\n' +
+      '• ต้องตั้งที่ Pages project เดียวกับเว็บ (Workers & Pages → เลือกโปรเจกต์ → Settings → Variables and secrets)\n' +
+      '• ใช้ชื่อ SAMBANOVA_API_KEY หรือ SAMBANOVA_KEY (รองรับตัวพิมพ์เล็ก/ใหญ่ของชื่อ key)\n' +
+      '• ถ้าใช้หน้า *.pages.dev จาก branch ลอง: ใส่ตัวแปรในแท็บ Preview ด้วย หรือ merge ไป main (Production)\n' +
+      '• ถ้า deploy ด้วย wrangler โดยไม่ผูก secret กับ Pages ให้ใช้: wrangler pages secret put SAMBANOVA_API_KEY\n' +
+      '• หลังเพิ่ม/แก้ค่าให้ Retry deployment หนึ่งครั้ง\n\n' +
+      'ผู้ดูแลโปรเจกต์สมัคร key: https://cloud.sambanova.ai/'
     );
   }
-  const model = env.SAMBANOVA_MODEL || 'Meta-Llama-3.3-70B-Instruct';
+  const model = stripSecret(env.SAMBANOVA_MODEL) || 'Meta-Llama-3.3-70B-Instruct';
   const r = await fetch('https://api.sambanova.ai/v1/chat/completions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
