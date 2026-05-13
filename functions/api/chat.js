@@ -218,7 +218,7 @@ ${rows(faq.config)}
 ${formatFaqItems(faq.items)}
 ` : '\n[Turso #2 FAQ (items/config): ไม่ได้เชื่อมต่อ]\n';
 
-  return `You are Hemato Bot — a helpful assistant for the Hematology Division, Priest Hospital (โรงพยาบาลสงฆ์), Thailand.
+  return `You are Hemato Bot — a helpful assistant for the Hematology Division, Siriraj Hospital (โรงพยาบาลศิริราช), Thailand.
 
 RULES:
 - Always reply in the SAME language as the user's message (Thai → Thai, English → English).
