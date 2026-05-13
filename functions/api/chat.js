@@ -614,7 +614,50 @@ function wantsScheduleKeywords(qNorm) {
   return /opd|ward|round|chief|schedule|ตาราง|ราวด์|วอร์ด|เมื่อไร|ช่วง|period|line|ไลน์|attending|นัด|กี่โมง|เวลา|slot|calendar|ดูงาน/.test(qNorm);
 }
 
-/** คำถามทั่วไปเรื่องกิจกรรม (ไม่ใช่ถามตารางรายคน) — กันไปจับชื่อผิด */
+/** ถามวันแรก / ก่อนมา / first day — ห้ามตอบด้วยดัมป์ OPD+รายชื่อ */
+function intentFirstDayQuestion(qNorm) {
+  if (qNorm.includes('วันแรก')) return true;
+  if (/\bfirst\s*day\b/.test(qNorm)) return true;
+  if (qNorm.includes('ก่อนมาดูงาน') || qNorm.includes('ก่อนวันมา') || qNorm.includes('ก่อนมาวอร์ด')) return true;
+  if (qNorm.includes('แรก') && (qNorm.includes('ต้อง') || qNorm.includes('ทำอะไร') || qNorm.includes('เตรียม') || qNorm.includes('ทำยังไง'))) return true;
+  if (/\bwhat\b.*\b(do|bring)\b.*\bfirst\b/.test(qNorm)) return true;
+  return false;
+}
+
+function firstDayFaqBonus(qNorm, item) {
+  if (!intentFirstDayQuestion(qNorm)) return 0;
+  const blob = normQ(
+    [item.tag_th, item.tag_en, item.keywords_th, item.keywords_en, item.answer_th, item.answer_en].join(' | ')
+  );
+  let b = 0;
+  if (/วันแรก|ก่อนมา|first\s*day|before\s*you|line|ไลน์|add\s*line|elective\s*line/.test(blob)) b += 42;
+  if (/ราวด์|ward|opd|chief|resident|note/.test(blob)) b += 14;
+  return b;
+}
+
+function staticFirstDayBlock(wantTh) {
+  if (wantTh) {
+    return [
+      'วันแรก / ก่อนเริ่มดูงาน (สรุปมาตรฐาน elective โลหิตวิทยา ศิริราช)',
+      '',
+      '• Add เข้ากลุ่ม LINE elective ก่อนวันมา และแนะนำตัวกับทีม',
+      '• ดูตารางราวด์วอร์ด + ตาราง OPD ใน note ของกลุ่ม LINE',
+      '• นัดเวลาและสถานที่ราวด์กับ chief resident',
+      '• OPD ห้อง 700 ชั้น 7 — โดยทั่วไป ถึง ~9:00 น. ช่วงตรวจ ~9:00–12:00 น.',
+      '• เมื่อระบบ AI กลับมา สามารถถามตารางรายวัน/รายคนได้ละเอียดขึ้นจากข้อมูลในฐานข้อมูล',
+    ].join('\n');
+  }
+  return [
+    'Before your first day (typical Hematology elective flow at Siriraj)',
+    '',
+    '• Join the elective LINE group before day one and introduce yourself to the team',
+    '• Read ward round times and the OPD schedule in the LINE group notes',
+    '• Confirm ward round time and place with the chief resident',
+    '• OPD is usually room 700, 7th floor, OPD building (~arrive ~9:00; clinic ~9:00–12:00)',
+    '• When the AI is back, ask again for person‑specific dates from the roster data',
+  ].join('\n');
+}
+
 function intentLikelyGeneralActivity(qNorm) {
   return /conference|journal|lecture|selecx|feedback|กิจกรรม|อบรม|mm\b|grand/.test(qNorm);
 }
@@ -844,6 +887,43 @@ function fallbackReplyFromData(messages, schedule, faq) {
       const out = head + card;
       return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
     }
+  }
+
+  if (intentFirstDayQuestion(qNorm)) {
+    if (hasFaq && faq.items && faq.items.length) {
+      const ranked = faq.items
+        .map((it) => ({ it, s: scoreFaqItem(qNorm, it) + firstDayFaqBonus(qNorm, it) }))
+        .filter((x) => x.s > 0)
+        .sort((a, b) => b.s - a.s);
+      if (ranked.length && ranked[0].s >= 10) {
+        const it = ranked[0].it;
+        const ans = wantTh
+          ? String(it.answer_th ?? '').trim() || String(it.answer_en ?? '').trim()
+          : String(it.answer_en ?? '').trim() || String(it.answer_th ?? '').trim();
+        if (ans) {
+          const out = head + ans;
+          return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
+        }
+      }
+      if (ranked.length && ranked[0].s >= 4) {
+        const top = ranked.slice(0, 2);
+        const parts = [];
+        for (let i = 0; i < top.length; i++) {
+          const it = top[i].it;
+          const tag = wantTh ? (it.tag_th || it.tag_en) : (it.tag_en || it.tag_th);
+          const ans = wantTh
+            ? String(it.answer_th ?? '').trim() || String(it.answer_en ?? '').trim()
+            : String(it.answer_en ?? '').trim() || String(it.answer_th ?? '').trim();
+          if (ans) parts.push(`${i + 1}) ${tag ? `[${tag}] ` : ''}${ans}`);
+        }
+        if (parts.length) {
+          const out = head + parts.join('\n\n');
+          return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
+        }
+      }
+    }
+    const out = head + staticFirstDayBlock(wantTh);
+    return out.length > FALLBACK_MAX ? out.slice(0, FALLBACK_MAX) + '…' : out;
   }
 
   const chunks = [];
