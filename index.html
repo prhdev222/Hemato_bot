@@ -271,16 +271,17 @@ img.hemato-zoom { cursor: zoom-in; }
   <label>AI:</label>
   <select id="prov" onchange="onProv()">
     <option value="groq">🆓 Groq (ฟรี — ไม่ต้องใส่ key)</option>
-    <option value="sambanova">⚡ SambaNova Cloud (ใส่ key — Llama 3.3 70B)</option>
+    <option value="sambanova">⚡ SambaNova Cloud (key จาก Cloudflare — Llama 3.3 70B)</option>
     <option value="openai">💳 OpenAI GPT-4o (ใส่ key)</option>
+    <option value="openrouter">🌐 OpenRouter (ใส่ key — หลายโมเดล)</option>
     <option value="gemini">💳 Google Gemini (ใส่ key)</option>
   </select>
   <div id="keyRow">
     <input type="password" id="keyInput" placeholder="sk-... หรือ AIza...">
     <button class="save-btn" onclick="saveKey()">บันทึก</button>
   </div>
-  <div class="settings-note">🔒 API key เก็บใน browser ของคุณเท่านั้น</div>
-  <div class="settings-groq-hint">💡 Groq ฟรีมีโควตาต่อวัน ถ้ามีคนใช้พร้อมกันเยอะอาจตอบไม่ได้ชั่วคราว — ลอง SambaNova Cloud (สมัคร key ที่ cloud.sambanova.ai) หรือ OpenAI / Gemini แล้วใส่ API key ของคุณ</div>
+  <div class="settings-note">🔒 OpenAI / Gemini / OpenRouter: key เก็บในเครื่องคุณ — Groq / SambaNova ใช้ key ฝั่งเซิร์ฟเวอร์ (Cloudflare)</div>
+  <div class="settings-groq-hint">💡 Groq ฟรีมีโควตาต่อวัน ถ้ามีคนใช้พร้อมกันเยอะอาจตอบไม่ได้ชั่วคราว — ลอง SambaNova (ตั้ง SAMBANOVA_API_KEY ใน Cloudflare) / OpenRouter / OpenAI / Gemini</div>
 </div>
 
 <!-- Messages -->
@@ -337,7 +338,7 @@ function setCfg(o) { localStorage.setItem(STORE, JSON.stringify(o)); }
 
 function onProv() {
   const v = document.getElementById('prov').value;
-  const needKey = v === 'openai' || v === 'gemini' || v === 'sambanova';
+  const needKey = v === 'openai' || v === 'gemini' || v === 'openrouter';
   document.getElementById('keyRow').style.display = needKey ? 'flex' : 'none';
   const inp = document.getElementById('keyInput');
   if (v === 'openai') {
@@ -347,8 +348,10 @@ function onProv() {
     inp.placeholder = 'AIza... (Google AI Studio)';
     document.getElementById('modeLabel').textContent = 'Google Gemini 2.0 Flash';
   } else if (v === 'sambanova') {
-    inp.placeholder = 'SambaNova API key (cloud.sambanova.ai)';
-    document.getElementById('modeLabel').textContent = 'SambaNova Llama 3.3 70B';
+    document.getElementById('modeLabel').textContent = 'SambaNova Llama 3.3 70B (Cloudflare)';
+  } else if (v === 'openrouter') {
+    inp.placeholder = 'sk-or-v1-... (openrouter.ai/keys)';
+    document.getElementById('modeLabel').textContent = 'OpenRouter (ค่าเริ่ม gpt-4o-mini)';
   } else {
     inp.placeholder = '—';
     document.getElementById('modeLabel').textContent = 'Groq llama-3.3-70b (ฟรี)';
@@ -483,7 +486,7 @@ async function send() {
         messages: hist.slice(-14),
         provider: c.provider || 'groq',
         apiKey:
-          c.provider === 'openai' || c.provider === 'gemini' || c.provider === 'sambanova'
+          c.provider === 'openai' || c.provider === 'gemini' || c.provider === 'openrouter'
             ? c.apiKey
             : undefined,
       }),
@@ -499,6 +502,7 @@ async function send() {
         c.provider === 'openai' ? 'OpenAI gpt-4o'
         : c.provider === 'gemini' ? 'Google Gemini 2.0 Flash'
         : c.provider === 'sambanova' ? 'SambaNova Llama 3.3 70B'
+        : c.provider === 'openrouter' ? 'OpenRouter'
         : 'Groq llama-3.3-70b';
       bot(d.reply, lbl);
     }

@@ -4,13 +4,19 @@
  * ENV ตั้งใน Cloudflare Pages → Settings → Environment variables:
  *   GROQ_API_KEY     gsk_...     (สมัครฟรี console.groq.com)
  *
- * SambaNova Cloud (OpenAI-compatible, ต้องมี key — cloud.sambanova.ai)
+ * SambaNova Cloud (OpenAI-compatible — key ตั้งที่ Cloudflare เท่านั้น ไม่รับจากหน้าเว็บ)
  *   SAMBANOVA_API_KEY
  *   SAMBANOVA_MODEL  (ทางเลือก เช่น Meta-Llama-3.3-70B-Instruct)
  *
  * ทางเลือก (ถ้าไม่ให้ user ใส่ key ใน browser):
  *   OPENAI_API_KEY   sk-...      (OpenAI)
  *   GEMINI_API_KEY   AIza...     (Google AI Studio)
+ *
+ * OpenRouter (OpenAI-compatible — openrouter.ai)
+ *   OPENROUTER_API_KEY   sk-or-v1-...
+ *   OPENROUTER_MODEL     (ทางเลือก เช่น openai/gpt-4o-mini, meta-llama/llama-3.3-70b-instruct)
+ *   OPENROUTER_HTTP_REFERER  (ทางเลือก — สำหรับอันดับบน OpenRouter)
+ *   OPENROUTER_X_TITLE       (ทางเลือก — ชื่อแอป)
  *
  * Turso #1 — ตารางแพทย์ / OPD / ward (รองรับ schema: electives, doctors, opd_calendar+supervisors, chiefs, …)
  *   TURSO_URL        libsql://...
@@ -27,6 +33,14 @@ const CORS = {
   'Access-Control-Allow-Headers': 'Content-Type',
   'Content-Type': 'application/json',
 };
+
+/** ใช้ key จากเบราว์เซอร์ถ้ามีค่าจริงหลัง trim — ถ้าเป็นช่องว่าง/ไม่ส่ง จะใช้ค่าจาก env เซิร์ฟเวอร์ */
+function effectiveApiKey(clientKey, envKey) {
+  const c = clientKey == null ? '' : String(clientKey).trim();
+  if (c) return c;
+  const e = envKey == null ? '' : String(envKey).trim();
+  return e;
+}
 
 export async function onRequestOptions() {
   return new Response(null, { headers: CORS });
@@ -45,14 +59,17 @@ export async function onRequestPost({ request, env }) {
 
     let reply;
     if (provider === 'openai') {
-      const key = apiKey || env.OPENAI_API_KEY;
+      const key = effectiveApiKey(apiKey, env.OPENAI_API_KEY);
       reply = await callOpenAI(messages, system, key);
     } else if (provider === 'gemini') {
-      const key = apiKey || env.GEMINI_API_KEY;
+      const key = effectiveApiKey(apiKey, env.GEMINI_API_KEY);
       reply = await callGemini(messages, system, key);
     } else if (provider === 'sambanova') {
-      const key = apiKey || env.SAMBANOVA_API_KEY;
-      reply = await callSambaNova(messages, system, key, env);
+      const k = env.SAMBANOVA_API_KEY == null ? '' : String(env.SAMBANOVA_API_KEY).trim();
+      reply = await callSambaNova(messages, system, k, env);
+    } else if (provider === 'openrouter') {
+      const key = effectiveApiKey(apiKey, env.OPENROUTER_API_KEY);
+      reply = await callOpenRouter(messages, system, key, env);
     } else {
       reply = await callGroq(messages, system, env.GROQ_API_KEY);
     }
@@ -466,7 +483,11 @@ async function callGroq(messages, system, key) {
 async function callSambaNova(messages, system, key, env) {
   if (!key) {
     throw new Error(
-      'ต้องใส่ SambaNova API key ในหน้าเว็บ (บันทึก) หรือตั้ง SAMBANOVA_API_KEY บนเซิร์ฟเวอร์ — สมัครที่ https://cloud.sambanova.ai/'
+      'ไม่พบ SAMBANOVA_API_KEY บนเซิร์ฟเวอร์\n\n' +
+      '• Cloudflare: Workers & Pages → เลือก Pages project นี้ → Settings → Variables and secrets → Production\n' +
+      '• ชื่อตัวแปรต้องเป็น SAMBANOVA_API_KEY (ตัวพิมพ์ใหญ่)\n' +
+      '• หลังเพิ่มหรือแก้ไข ให้ Retry deployment หนึ่งครั้ง\n\n' +
+      'ผู้ดูแลโปรเจกต์สมัคร key ได้ที่ https://cloud.sambanova.ai/'
     );
   }
   const model = env.SAMBANOVA_MODEL || 'Meta-Llama-3.3-70B-Instruct';
@@ -499,6 +520,32 @@ async function callOpenAI(messages, system, key) {
     }),
   });
   if (!r.ok) throw new Error(`OpenAI: ${await r.text()}`);
+  return (await r.json()).choices?.[0]?.message?.content ?? '(ไม่ได้รับคำตอบ)';
+}
+
+async function callOpenRouter(messages, system, key, env) {
+  if (!key) {
+    throw new Error(
+      'ต้องใส่ OpenRouter API key ในหน้าเว็บ (บันทึก) หรือตั้ง OPENROUTER_API_KEY บนเซิร์ฟเวอร์ — https://openrouter.ai/keys'
+    );
+  }
+  const model = env.OPENROUTER_MODEL || 'openai/gpt-4o-mini';
+  const headers = {
+    Authorization: `Bearer ${key}`,
+    'Content-Type': 'application/json',
+  };
+  if (env.OPENROUTER_HTTP_REFERER) headers['HTTP-Referer'] = env.OPENROUTER_HTTP_REFERER;
+  if (env.OPENROUTER_X_TITLE) headers['X-Title'] = env.OPENROUTER_X_TITLE;
+  const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model,
+      max_tokens: 1024,
+      messages: [{ role: 'system', content: system }, ...messages],
+    }),
+  });
+  if (!r.ok) throw new Error(`OpenRouter: ${await r.text()}`);
   return (await r.json()).choices?.[0]?.message?.content ?? '(ไม่ได้รับคำตอบ)';
 }
 
