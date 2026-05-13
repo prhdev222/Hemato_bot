@@ -8,7 +8,7 @@
  *   OPENAI_API_KEY   sk-...      (OpenAI)
  *   GEMINI_API_KEY   AIza...     (Google AI Studio)
  *
- * Turso #1 — ตารางแพทย์ / OPD / ward (เช่น hemato_elective)
+ * Turso #1 — ตารางแพทย์ / OPD / ward (รองรับ schema: electives, doctors, opd_calendar+supervisors, chiefs, …)
  *   TURSO_URL        libsql://...
  *   TURSO_TOKEN      eyJhbGci...
  *
@@ -62,7 +62,9 @@ export async function onRequestPost({ request, env }) {
 
 /* ── Turso (read-only) ─────────────────────────────────────── */
 function makeTursoExec(libsqlUrl, token) {
-  const base = libsqlUrl.replace('libsql://', 'https://');
+  const base = libsqlUrl.startsWith('libsql://')
+    ? libsqlUrl.replace('libsql://', 'https://')
+    : libsqlUrl;
   const hdr  = {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
@@ -86,7 +88,70 @@ function makeTursoExec(libsqlUrl, token) {
   };
 }
 
-/** DB แรก: doctors / OPD / ward */
+/** แปลงค่าวันที่ในแถวเป็น YYYY-MM-DD (เขต Asia/Bangkok ถ้าเป็น unix ms) */
+function cellToYmd(val) {
+  if (val == null || val === '') return '';
+  if (typeof val === 'number') {
+    const ms = val < 1e12 ? val * 1000 : val;
+    try {
+      return new Date(ms).toLocaleDateString('sv-SE', { timeZone: 'Asia/Bangkok' });
+    } catch {
+      return '';
+    }
+  }
+  const s = String(val).trim();
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (m) return m[1];
+  return '';
+}
+
+/** ชื่อตาราง/คอลัมน์ ASCII เท่านั้น (กันฉีด SQL) */
+function sqlIdent(id) {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(id) ? id : null;
+}
+
+/** หาคอลัมน์วันที่สำหรับตาราง OPD จาก PRAGMA */
+async function pickOpdDateColumn(exec, table) {
+  const t = sqlIdent(table);
+  if (!t) return 'date';
+  const rows = await exec(`PRAGMA table_info(${t})`);
+  const names = rows.map(r => String(r.name ?? ''));
+  for (const pref of ['date', 'opd_date', 'clinic_date', 'schedule_date', 'slot_date', 'day']) {
+    if (names.includes(pref)) return pref;
+  }
+  const hit = names.find(n => /date|day|schedule|opd/i.test(n));
+  return sqlIdent(hit || '') || 'date';
+}
+
+function buildElectiveNameMap(electiveRows) {
+  const m = new Map();
+  for (const r of electiveRows || []) {
+    const id = String(r.id ?? '');
+    if (!id) continue;
+    const label = [r.name, r.name_en].filter(Boolean).join(' / ');
+    m.set(id, label || id);
+  }
+  return m;
+}
+
+/** แปลง elective_ids (JSON array) เป็นชื่อจากตาราง electives */
+function enrichOpdRows(rows, electiveMap) {
+  return (rows || []).map(r => {
+    let elective_names = '';
+    try {
+      const raw = r.elective_ids;
+      const ids = typeof raw === 'string' ? JSON.parse(raw || '[]') : Array.isArray(raw) ? raw : [];
+      if (Array.isArray(ids)) {
+        elective_names = ids.map(id => electiveMap.get(String(id)) || String(id)).join(', ');
+      }
+    } catch {
+      elective_names = String(r.elective_ids ?? '');
+    }
+    return elective_names ? { ...r, elective_names } : { ...r };
+  });
+}
+
+/** DB แรก: electives, doctors, opd_calendar (+supervisors), chiefs, ward */
 async function queryScheduleTurso(env) {
   const { TURSO_URL, TURSO_TOKEN } = env;
   if (!TURSO_URL || !TURSO_TOKEN) return { ok: false };
@@ -101,29 +166,89 @@ async function queryScheduleTurso(env) {
   const has = (t) => tables.includes(t);
   const res = { ok: true, today, tables };
 
-  for (const t of ['doctors', 'electives', 'doctor', 'elective']) {
-    if (has(t)) {
-      res.doctors = await exec(`SELECT * FROM ${t} ORDER BY rowid DESC LIMIT 80`);
-      break;
-    }
+  let electiveMap = new Map();
+  if (has('electives')) {
+    res.electives = await exec(
+      `SELECT id, name, name_en, from_hospital, level, date_range, ward, status, date_range2, ward2
+       FROM electives ORDER BY rowid DESC LIMIT 150`
+    );
+    electiveMap = buildElectiveNameMap(res.electives);
   }
 
-  for (const t of ['opd_schedule', 'opd_schedules', 'opd', 'schedule']) {
-    if (has(t)) {
-      const month = today.slice(0, 7);
-      res.opdMonth = await exec(
-        `SELECT * FROM ${t} WHERE date LIKE '${month}%' ORDER BY date LIMIT 120`
+  if (has('doctors')) {
+    res.doctors = await exec(
+      `SELECT id, name, type, period1_dates, ward1, chief1_name, chief1_link, period2_dates, ward2,
+              chief2_name, chief2_link, opd_schedule, opd_role, status, notes
+       FROM doctors ORDER BY rowid DESC LIMIT 80`
+    );
+  }
+
+  const opdTableCandidates = [
+    'opd_calendar',
+    'opd_schedule', 'opd_schedules', 'elective_opd', 'opd_assignment', 'opd', 'schedule',
+  ];
+  for (const t of opdTableCandidates) {
+    if (!has(t)) continue;
+    const tn = sqlIdent(t);
+    if (!tn) continue;
+
+    const dateCol = await pickOpdDateColumn(exec, tn);
+    const dc = sqlIdent(dateCol) || 'date';
+    const month = today.slice(0, 7);
+
+    let opdMonth;
+    if (tn === 'opd_calendar' && has('supervisors')) {
+      opdMonth = await exec(
+        `SELECT o.id, o.date, o.opd_type, o.supervisor_id, o.elective_ids, o.participant_label,
+                o.notes, o.opd_mode, s.name AS supervisor_name, s.name_en AS supervisor_name_en
+         FROM opd_calendar o
+         LEFT JOIN supervisors s ON o.supervisor_id = s.id
+         WHERE o.${dc} LIKE '${month}%'
+         ORDER BY o.${dc}
+         LIMIT 120`
       );
-      res.opdToday = res.opdMonth.filter(r => r.date === today);
-      break;
+    } else {
+      opdMonth = await exec(
+        `SELECT * FROM ${tn} WHERE ${dc} LIKE '${month}%' ORDER BY ${dc} LIMIT 120`
+      );
     }
+
+    if (!opdMonth.length) {
+      const wide = await exec(`SELECT * FROM ${tn} ORDER BY rowid DESC LIMIT 200`);
+      opdMonth = wide.filter(r => cellToYmd(r[dc]).startsWith(month));
+    }
+
+    opdMonth = enrichOpdRows(opdMonth, electiveMap);
+    res.opdMonth = opdMonth;
+    res.opdToday = opdMonth.filter(r => cellToYmd(r[dc] ?? r.date) === today);
+    break;
+  }
+
+  if (has('chiefs')) {
+    const month = today.slice(0, 7);
+    let ch = await exec(
+      `SELECT * FROM chiefs WHERE month = '${month}' ORDER BY ward_code LIMIT 40`
+    );
+    if (!ch.length) {
+      ch = await exec(
+        `SELECT * FROM chiefs ORDER BY month DESC, ward_code LIMIT 40`
+      );
+    }
+    res.chiefs = ch;
   }
 
   for (const t of ['ward_schedule', 'wards', 'ward', 'ward_chief']) {
     if (has(t)) {
-      res.ward = await exec(`SELECT * FROM ${t} ORDER BY rowid DESC LIMIT 40`);
+      const wn = sqlIdent(t);
+      if (wn) res.ward = await exec(`SELECT * FROM ${wn} ORDER BY rowid DESC LIMIT 40`);
       break;
     }
+  }
+
+  if (has('chief_residents')) {
+    res.chief_residents = await exec(
+      `SELECT name, role, name_en, active FROM chief_residents WHERE active = 1 ORDER BY name LIMIT 40`
+    );
   }
 
   return res;
@@ -192,13 +317,22 @@ function buildSystem({ schedule, faq }) {
   const scheduleSection = schedule.ok ? `
 === ข้อมูลตารางจริง — Turso DB #1 (วันที่: ${schedule.today}) ===
 
-[แพทย์ Elective / Doctors ทั้งหมด]
+[นศพ./ผู้มา elective — ตาราง electives]
+${rows(schedule.electives)}
+
+[แพทย์ / ทีมงาน (ตาราง doctors — งวด ward, chief, opd_schedule เป็นข้อความ)]
 ${rows(schedule.doctors)}
 
-[Ward / Chief Resident]
+[Chief / ward รายเดือน — ตาราง chiefs (month, ward_code, chief_name, supervise_list)]
+${rows(schedule.chiefs)}
+
+[Chief residents ที่ active — chief_residents]
+${rows(schedule.chief_residents)}
+
+[Ward (ตารางอื่นถ้ามี)]
 ${rows(schedule.ward)}
 
-[OPD วันนี้ (${schedule.today})]
+[OPD วันนี้ (${schedule.today}) — จาก opd_calendar: supervisor_name = อ.ผู้ดูแล, elective_names = ชื่อนศพ. จาก elective_ids]
 ${rows(schedule.opdToday)}
 
 [OPD เดือนนี้ทั้งหมด]
@@ -225,7 +359,7 @@ RULES:
 - Be concise, friendly, and accurate.
 - NEVER invent names, dates, or schedules that are not in the data below.
 - If you don't know something, say so honestly.
-- For specific schedules (who is on OPD which day, ward roster), use Turso DB #1 only.
+- For specific schedules (who is on OPD which day, ward roster), use Turso DB #1 only. For opd_calendar rows, use supervisor_name and elective_names when present; elective_ids alone is redundant if elective_names is filled.
 - For general elective activity content, prefer Turso DB #2 when it is connected; otherwise use the static outline at the bottom.
 
 ${scheduleSection}
