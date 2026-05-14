@@ -531,7 +531,22 @@ function lastUserText(messages) {
 }
 
 function prefersThai(text) {
-  return /[\u0e00-\u0e7f]/.test(String(text || ''));
+  const s = String(text || '');
+  return /[\u0e00-\u0e7f]/.test(s);
+}
+
+function pickLocalizedName(row, wantTh, thKeys = ['name'], enKeys = ['name_en']) {
+  const pick = (keys) => {
+    for (const key of keys) {
+      const v = String(row?.[key] ?? '').trim();
+      if (v) return v;
+    }
+    return '';
+  };
+  const th = pick(thKeys);
+  const en = pick(enKeys);
+  if (wantTh) return th || en || '—';
+  return en || th || '—';
 }
 
 function normQ(s) {
@@ -761,12 +776,23 @@ function bestElectiveMatchFromQuery(rawQ, electives) {
   return { elective: best, score: bestScore };
 }
 
-function shouldShowPersonalElectiveCard(qNorm, score) {
+function isLikelyElectiveNameQuery(rawQ, qNorm) {
+  const raw = String(rawQ || '').trim();
+  if (!raw) return false;
+  if (wantsScheduleKeywords(qNorm) || intentLikelyGeneralActivity(qNorm)) return false;
+  const compact = raw.replace(/\s+/g, ' ').trim();
+  const tokenCount = compact.split(' ').filter(Boolean).length;
+  if (tokenCount > 4) return false;
+  return /^[A-Za-z\u0e00-\u0e7f.' -]+$/.test(compact);
+}
+
+function shouldShowPersonalElectiveCard(rawQ, qNorm, score) {
   if (intentLikelyGeneralActivity(qNorm) && !wantsScheduleKeywords(qNorm)) {
     return score >= 200;
   }
   if (score >= 95) return true;
   if (score >= 40 && wantsScheduleKeywords(qNorm)) return true;
+  if (score >= 60 && isLikelyElectiveNameQuery(rawQ, qNorm)) return true;
   return false;
 }
 
@@ -942,7 +968,7 @@ function hasSecondPeriodBlock(e, d) {
 }
 
 function formatElectiveScheduleCard(e, doctor, chiefsRows, opdRows, wantTh) {
-  const display = String(e.name_en || '').trim() || String(e.name || '').trim() || 'Elective';
+  const display = pickLocalizedName(e, wantTh);
   const level = String(e.level || doctor?.type || '').trim() || '—';
   const p1Dates = String(e.date_range || doctor?.period1_dates || '').trim() || '—';
   const p1Ward = String(e.ward || doctor?.ward1 || '').trim() || '—';
@@ -957,10 +983,10 @@ function formatElectiveScheduleCard(e, doctor, chiefsRows, opdRows, wantTh) {
   const lines = [];
   if (wantTh) {
     lines.push('สวัสดีค่ะ/ครับ 🧑‍⚕️');
-    lines.push(`${display} (${level}) ตาราง elective โดยสรุปจากข้อมูลในระบบมีดังนี้:`);
+    lines.push(`${display} (${level}) หน้าที่ดูงานและตารางโดยสรุปจากข้อมูลในระบบมีดังนี้:`);
     lines.push('');
     lines.push(`🟦 ช่วงที่ 1 (${p1Dates})`);
-    lines.push(`🏥 Ward: ${p1Ward}`);
+    lines.push(`🏥 วอร์ดที่ดูงาน: ${p1Ward}`);
     lines.push(`👑 Chief: ${chief1}`);
     lines.push(`📱 LINE: ${line1}`);
     lines.push('(แนะนำให้ add LINE เพื่อนัดเวลา/สถานที่ราวด์วอร์ดกับ chief)');
@@ -984,21 +1010,22 @@ function formatElectiveScheduleCard(e, doctor, chiefsRows, opdRows, wantTh) {
     const ln2 = lineIdDisplay(doctor?.chief2_link);
     lines.push('');
     lines.push(wantTh ? `🟪 ช่วงที่ 2 (${p2d})` : `🟪 Period 2 (${p2d})`);
-    lines.push(`🏥 Ward: ${p2w}`);
+    lines.push(wantTh ? `🏥 วอร์ดที่ดูงาน: ${p2w}` : `🏥 Ward duty: ${p2w}`);
     lines.push(`👑 Chief: ${ch2}`);
     if (ln2 !== '—') lines.push(`${wantTh ? '📱 LINE' : '📱 LINE ID'}: ${ln2}`);
   }
 
   lines.push('');
-  lines.push(wantTh ? '🏥 ตาราง OPD (เดือนนี้จากฐานข้อมูล)' : '🏥 OPD Schedule');
+  lines.push(wantTh ? '🏥 วันออก OPD (เดือนนี้จากฐานข้อมูล)' : '🏥 OPD Days');
   if (opdRows && opdRows.length) {
     for (const r of opdRows) {
       const when = formatCardDateFromRow(r, wantTh);
-      const sup =
-        String(r.supervisor_name_en || '').trim() ||
-        String(r.supervisor_name || '').trim() ||
-        String(r.supervisor_name_th || '').trim() ||
-        '—';
+      const sup = pickLocalizedName(
+        r,
+        wantTh,
+        ['supervisor_name', 'supervisor_name_th'],
+        ['supervisor_name_en', 'supervisor_name']
+      );
       lines.push(`• ${when} — ${wantTh ? 'กับ' : 'With'} ${sup}`);
     }
   } else {
@@ -1017,7 +1044,7 @@ function formatElectiveScheduleCard(e, doctor, chiefsRows, opdRows, wantTh) {
 function tryPersonalElectiveScheduleBlock(rawQ, qNorm, schedule, wantTh) {
   if (!schedule?.ok || !schedule.electives?.length) return null;
   const hit = bestElectiveMatchFromQuery(rawQ, schedule.electives);
-  if (!hit || !shouldShowPersonalElectiveCard(qNorm, hit.score)) return null;
+  if (!hit || !shouldShowPersonalElectiveCard(rawQ, qNorm, hit.score)) return null;
   const doctor = findDoctorForElective(hit.elective, schedule.doctors || []);
   const opdRows = opdRowsForElectiveId(schedule, hit.elective.id);
   return formatElectiveScheduleCard(hit.elective, doctor, schedule.chiefs || [], opdRows, wantTh);
@@ -1048,7 +1075,12 @@ function formatOpdBlock(rows, todayLabel, wantTh, isMonth = false) {
   for (const r of rows.slice(0, 30)) {
     const dateRaw = r.date ?? r.opd_date ?? r.clinic_date ?? '';
     const dateStr = ymdToHuman(cellToYmd(dateRaw), wantTh);
-    const sup = String(r.supervisor_name_en || r.supervisor_name || '').trim();
+    const sup = pickLocalizedName(
+      r,
+      wantTh,
+      ['supervisor_name', 'supervisor_name_th'],
+      ['supervisor_name_en', 'supervisor_name']
+    );
     const elName = String(r.elective_names || '').trim();
     const mode = String(r.opd_mode || '').trim();
     const type = String(r.opd_type || '').trim();
@@ -1068,7 +1100,7 @@ function formatElectiveRosterBlock(electives, wantTh) {
   const title = wantTh ? '👥 ผู้มาดูงาน elective ขณะนี้' : '👥 Current elective students';
   const lines = [title, ''];
   for (const e of electives.slice(0, 15)) {
-    const name = String(e.name || e.name_en || '').trim();
+    const name = pickLocalizedName(e, wantTh);
     const hosp = String(e.from_hospital || '').trim();
     const level = String(e.level || '').trim();
     const ward = String(e.ward || '').trim();
@@ -1078,7 +1110,7 @@ function formatElectiveRosterBlock(electives, wantTh) {
     if (level) line += ` (${level})`;
     if (hosp) line += wantTh ? ` จาก ${hosp}` : ` from ${hosp}`;
     if (dateRange) line += ` — ${dateRange}`;
-    if (ward) line += wantTh ? ` | ward: ${ward}` : ` | ${ward}`;
+    if (ward) line += wantTh ? ` | วอร์ด: ${ward}` : ` | Ward: ${ward}`;
     lines.push(line);
   }
   return lines.join('\n');
