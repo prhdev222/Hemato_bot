@@ -761,6 +761,36 @@ function scoreElectiveAgainstQuery(qNorm, e) {
 function bestElectiveMatchFromQuery(rawQ, electives) {
   if (!electives || !electives.length) return null;
   const qNorm = normQ(rawQ);
+  const qName = normalizeElectiveQueryName(rawQ);
+
+  if (qName) {
+    for (const e of electives) {
+      for (const v of electiveNameVariants(e)) {
+        if (qName === v) {
+          return { elective: e, score: 260 };
+        }
+      }
+    }
+
+    let closeNameBest = null;
+    let closeNameScore = 0;
+    for (const e of electives) {
+      for (const v of electiveNameVariants(e)) {
+        if (!v) continue;
+        if (v.includes(qName) || qName.includes(v)) {
+          const sc = Math.min(180, 110 + v.length);
+          if (sc > closeNameScore) {
+            closeNameScore = sc;
+            closeNameBest = e;
+          }
+        }
+      }
+    }
+    if (closeNameBest) {
+      return { elective: closeNameBest, score: closeNameScore };
+    }
+  }
+
   let best = null;
   let bestScore = 0;
   for (const e of electives) {
@@ -939,6 +969,20 @@ function chiefNameMatches(a, b) {
   const y = normalizePersonName(b);
   if (!x || !y) return false;
   return x === y || x.includes(y) || y.includes(x);
+}
+
+function normalizeElectiveQueryName(s) {
+  return normalizePersonName(s)
+    .replace(/\b(นศพ|นพ|พญ)\.?\b/g, '')
+    .replace(/[^a-z0-9\u0e00-\u0e7f ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function electiveNameVariants(e) {
+  return [e?.name, e?.name_en]
+    .map((v) => normalizeElectiveQueryName(v))
+    .filter((v, i, arr) => v && arr.indexOf(v) === i);
 }
 
 function formatCardDateFromRow(r, wantTh) {
