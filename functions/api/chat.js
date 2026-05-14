@@ -263,9 +263,7 @@ async function queryScheduleTurso(env) {
 
   if (has('doctors')) {
     res.doctors = await exec(
-      `SELECT id, name, type, period1_dates, ward1, chief1_name, chief1_link, period2_dates, ward2,
-              chief2_name, chief2_link, opd_schedule, opd_role, status, notes
-       FROM doctors ORDER BY rowid DESC LIMIT 80`
+      `SELECT * FROM doctors ORDER BY rowid DESC LIMIT 80`
     );
   }
 
@@ -333,7 +331,7 @@ async function queryScheduleTurso(env) {
 
   if (has('chief_residents')) {
     res.chief_residents = await exec(
-      `SELECT name, role, name_en, active FROM chief_residents WHERE active = 1 ORDER BY name LIMIT 40`
+      `SELECT * FROM chief_residents WHERE active = 1 ORDER BY name LIMIT 40`
     );
   }
 
@@ -911,6 +909,38 @@ function lineIdDisplay(link) {
   return truncSys(s, 80);
 }
 
+function firstNonEmptyFromKeys(row, keys) {
+  for (const key of keys) {
+    const v = String(row?.[key] ?? '').trim();
+    if (v) return v;
+  }
+  return '';
+}
+
+function chiefLinkFromRow(row, prefix = '') {
+  const base = prefix
+    ? [
+        `${prefix}_link`,
+        `${prefix}_line_id`,
+        `${prefix}_line`,
+        `${prefix}_contact`,
+        `${prefix}_line_url`,
+      ]
+    : ['chief_link', 'line_id', 'line', 'contact', 'chief_line_id', 'line_url', 'line_link'];
+  return firstNonEmptyFromKeys(row, base);
+}
+
+function normalizePersonName(s) {
+  return normQ(s).replace(/\s+/g, ' ').trim();
+}
+
+function chiefNameMatches(a, b) {
+  const x = normalizePersonName(a);
+  const y = normalizePersonName(b);
+  if (!x || !y) return false;
+  return x === y || x.includes(y) || y.includes(x);
+}
+
 function formatCardDateFromRow(r, wantTh) {
   const raw = r.date ?? r.opd_date ?? r.clinic_date ?? r.schedule_date;
   const ymd = cellToYmd(raw);
@@ -950,14 +980,50 @@ function pickChiefFromChiefsTable(chiefsRows, wardLabel) {
     const name = String(r.chief_name || r.name || '').trim();
     if (!name) continue;
     if (!want.length) {
-      return { name, link: String(r.chief_link || r.line || r.line_id || r.contact || '').trim() || null };
+      return r;
     }
     const code = normQ(r.ward_code || r.ward || r.section || '');
     if (want.some(w => code.includes(w))) {
-      return { name, link: String(r.chief_link || r.line || r.line_id || r.contact || '').trim() || null };
+      return r;
     }
   }
   return null;
+}
+
+function findChiefResidentByName(chiefResidentsRows, name) {
+  if (!chiefResidentsRows || !chiefResidentsRows.length || !name) return null;
+  return chiefResidentsRows.find((r) =>
+    chiefNameMatches(name, r?.name) || chiefNameMatches(name, r?.name_en)
+  ) || null;
+}
+
+function buildChiefInfo({ doctor, chiefsRows, chiefResidentsRows, wardLabel, index, wantTh }) {
+  const chiefPrefix = index === 2 ? 'chief2' : 'chief1';
+  const nameTh = firstNonEmptyFromKeys(doctor, [`${chiefPrefix}_name`, `${chiefPrefix}_name_th`]);
+  const nameEn = firstNonEmptyFromKeys(doctor, [`${chiefPrefix}_name_en`]);
+  const rowLink = chiefLinkFromRow(doctor, chiefPrefix);
+
+  const wardFallbackRow = pickChiefFromChiefsTable(chiefsRows, wardLabel);
+  const wardFallbackName = pickLocalizedName(
+    wardFallbackRow,
+    wantTh,
+    ['chief_name', 'name', 'chief_name_th'],
+    ['chief_name_en', 'name_en', 'chief_name', 'name']
+  );
+  const wardFallbackLink = chiefLinkFromRow(wardFallbackRow);
+
+  const residentMatch = findChiefResidentByName(
+    chiefResidentsRows,
+    nameTh || nameEn || wardFallbackName
+  );
+  const residentName = pickLocalizedName(residentMatch, wantTh);
+  const residentLink = chiefLinkFromRow(residentMatch);
+
+  const name = wantTh
+    ? (nameTh || wardFallbackName || residentName || '—')
+    : (nameEn || residentName || nameTh || wardFallbackName || '—');
+  const link = lineIdDisplay(rowLink || residentLink || wardFallbackLink);
+  return { name, link };
 }
 
 /** แสดงรอบ 2 เฉพาะเมื่อมีช่วงวันที่รอบ 2 ใน DB — ไม่พิมพ์แค่ ward2 โดยไม่มีวันที่ */
@@ -967,17 +1033,19 @@ function hasSecondPeriodBlock(e, d) {
   return p2dates.length > 0 && p2dates !== '—';
 }
 
-function formatElectiveScheduleCard(e, doctor, chiefsRows, opdRows, wantTh) {
+function formatElectiveScheduleCard(e, doctor, chiefsRows, chiefResidentsRows, opdRows, wantTh) {
   const display = pickLocalizedName(e, wantTh);
   const level = String(e.level || doctor?.type || '').trim() || '—';
   const p1Dates = String(e.date_range || doctor?.period1_dates || '').trim() || '—';
   const p1Ward = String(e.ward || doctor?.ward1 || '').trim() || '—';
-  const chiefFallback = pickChiefFromChiefsTable(chiefsRows, p1Ward);
-  const chief1 =
-    String(doctor?.chief1_name || '').trim() ||
-    String(chiefFallback?.name || '').trim() ||
-    '—';
-  const line1 = lineIdDisplay(doctor?.chief1_link || chiefFallback?.link);
+  const chief1 = buildChiefInfo({
+    doctor,
+    chiefsRows,
+    chiefResidentsRows,
+    wardLabel: p1Ward,
+    index: 1,
+    wantTh,
+  });
   const attend = pickAttendingHint(doctor);
 
   const lines = [];
@@ -987,8 +1055,8 @@ function formatElectiveScheduleCard(e, doctor, chiefsRows, opdRows, wantTh) {
     lines.push('');
     lines.push(`🟦 ช่วงที่ 1 (${p1Dates})`);
     lines.push(`🏥 วอร์ดที่ดูงาน: ${p1Ward}`);
-    lines.push(`👑 Chief: ${chief1}`);
-    lines.push(`📱 LINE: ${line1}`);
+    lines.push(`👑 Chief: ${chief1.name}`);
+    lines.push(`📱 LINE: ${chief1.link}`);
     lines.push('(แนะนำให้ add LINE เพื่อนัดเวลา/สถานที่ราวด์วอร์ดกับ chief)');
     lines.push(`👨‍⚕️ อาจารย์/ทีมร่วมราวด์ (จากข้อมูล field): ${attend}`);
   } else {
@@ -997,8 +1065,8 @@ function formatElectiveScheduleCard(e, doctor, chiefsRows, opdRows, wantTh) {
     lines.push('');
     lines.push(`🟦 Period 1 (${p1Dates})`);
     lines.push(`🏥 Ward: ${p1Ward}`);
-    lines.push(`👑 Chief: ${chief1}`);
-    lines.push(`📱 LINE ID: ${line1}`);
+    lines.push(`👑 Chief: ${chief1.name}`);
+    lines.push(`📱 LINE ID: ${chief1.link}`);
     lines.push('(Please add LINE to coordinate the ward round time and location.)');
     lines.push(`👨‍⚕️ Attending / notes from roster: ${attend}`);
   }
@@ -1006,13 +1074,19 @@ function formatElectiveScheduleCard(e, doctor, chiefsRows, opdRows, wantTh) {
   if (hasSecondPeriodBlock(e, doctor)) {
     const p2d = String(e.date_range2 || doctor?.period2_dates || '').trim();
     const p2w = String(e.ward2 || doctor?.ward2 || '').trim() || '—';
-    const ch2 = String(doctor?.chief2_name || '').trim() || '—';
-    const ln2 = lineIdDisplay(doctor?.chief2_link);
+    const chief2 = buildChiefInfo({
+      doctor,
+      chiefsRows,
+      chiefResidentsRows,
+      wardLabel: p2w,
+      index: 2,
+      wantTh,
+    });
     lines.push('');
     lines.push(wantTh ? `🟪 ช่วงที่ 2 (${p2d})` : `🟪 Period 2 (${p2d})`);
     lines.push(wantTh ? `🏥 วอร์ดที่ดูงาน: ${p2w}` : `🏥 Ward duty: ${p2w}`);
-    lines.push(`👑 Chief: ${ch2}`);
-    if (ln2 !== '—') lines.push(`${wantTh ? '📱 LINE' : '📱 LINE ID'}: ${ln2}`);
+    lines.push(`👑 Chief: ${chief2.name}`);
+    if (chief2.link !== '—') lines.push(`${wantTh ? '📱 LINE' : '📱 LINE ID'}: ${chief2.link}`);
   }
 
   lines.push('');
@@ -1047,7 +1121,14 @@ function tryPersonalElectiveScheduleBlock(rawQ, qNorm, schedule, wantTh) {
   if (!hit || !shouldShowPersonalElectiveCard(rawQ, qNorm, hit.score)) return null;
   const doctor = findDoctorForElective(hit.elective, schedule.doctors || []);
   const opdRows = opdRowsForElectiveId(schedule, hit.elective.id);
-  return formatElectiveScheduleCard(hit.elective, doctor, schedule.chiefs || [], opdRows, wantTh);
+  return formatElectiveScheduleCard(
+    hit.elective,
+    doctor,
+    schedule.chiefs || [],
+    schedule.chief_residents || [],
+    opdRows,
+    wantTh
+  );
 }
 
 /* ── Human-readable schedule formatters ──────────────────────── */
