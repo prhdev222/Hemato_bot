@@ -34,22 +34,22 @@ const CORS = {
   'Content-Type': 'application/json',
 };
 
-const HEME_NOTES_TH = [
-  '🩸 Heme note: ทุก smear มีเรื่องจะเล่า ถ้าเรายอมมองนานอีกนิด',
-  '🩸 Heme note: CBC บางใบดูเรียบ ๆ แต่ชอบซ่อน plot twist ไว้เสมอ',
-  '🩸 Heme note: ใน heme ความสงสัยไม่ใช่จุดอ่อน แต่เป็น skill',
-  '🩸 Heme note: แยก cell วันนี้ยังไม่คล่อง ไม่เป็นไร พรุ่งนี้ตาจะคมขึ้นอีก',
-  '🩸 Heme note: เหนื่อยได้ งงได้ แต่ขออย่าหยุดถาม why',
-  '🩸 Heme note: marrow ยังไม่ต้องรีบกลัว ค่อย ๆ รู้จักกัน เดี๋ยวก็สนิท',
+const HEMATO_QUOTES_TH = [
+  'ทุก smear มีเรื่องจะเล่า ถ้าเรายอมมองนานอีกนิด',
+  'CBC บางใบดูเรียบ ๆ แต่ชอบซ่อน clue สำคัญไว้เสมอ',
+  'ในโลหิตวิทยา ความสงสัยที่ดี มีค่าพอ ๆ กับคำตอบที่ถูก',
+  'แยก cell วันนี้ยังไม่คล่อง ไม่เป็นไร พรุ่งนี้ตาจะคมขึ้นอีก',
+  'ผู้ป่วยหนึ่งคน อาจสอนเราได้มากกว่าหนึ่งบทในตำรา',
+  'ค่อย ๆ ดู ค่อย ๆ คิด แล้ว hematology จะสนุกขึ้นมาก',
 ];
 
-const HEME_NOTES_EN = [
-  '🩸 Heme note: Every smear has a story. Stay long enough to read it.',
-  '🩸 Heme note: A quiet CBC can still hide a dramatic plot twist.',
-  '🩸 Heme note: In heme, curiosity is not a weakness. It is a skill.',
-  '🩸 Heme note: If cell recognition feels hard today, that just means your eyes are still training.',
-  '🩸 Heme note: It is fine to feel lost sometimes. Just do not stop asking why.',
-  '🩸 Heme note: No need to fear the marrow. Start with one clue at a time.',
+const HEMATO_QUOTES_EN = [
+  'Every smear has a story. Stay long enough to read it.',
+  'A quiet CBC can still hide the most important clue.',
+  'In hematology, a good question is often as valuable as the right answer.',
+  'If cell recognition feels hard today, your eyes are still training.',
+  'One patient can teach more than a full chapter of notes.',
+  'Take it step by step. Hematology becomes clearer the more thoughtfully you observe.',
 ];
 
 /** ใช้ key จากเบราว์เซอร์ถ้ามีค่าจริงหลัง trim — ถ้าเป็นช่องว่าง/ไม่ส่ง จะใช้ค่าจาก env เซิร์ฟเวอร์ */
@@ -111,6 +111,12 @@ export async function onRequestPost({ request, env }) {
   try {
     const { messages, provider = 'groq', apiKey } = await request.json();
     if (!Array.isArray(messages)) throw new Error('messages required');
+    const rawQ = lastUserText(messages);
+
+    if (intentQuoteRequest(rawQ)) {
+      const reply = buildQuoteReply(rawQ);
+      return new Response(JSON.stringify({ reply, fallback: true }), { headers: CORS });
+    }
 
     const [schedule, faq] = await Promise.all([
       queryScheduleTurso(env),
@@ -124,7 +130,6 @@ export async function onRequestPost({ request, env }) {
     /* ── โหมดไม่ใช้ AI: ดึง DB ตรงๆ ──────────────────────────── */
     if (provider === 'noai') {
       reply = fallbackReplyFromData(messages, schedule, faq, true);
-      reply = appendHemeNote(reply, messages);
       fallback = true;
       return new Response(JSON.stringify({ reply, fallback }), { headers: CORS });
     }
@@ -154,8 +159,6 @@ export async function onRequestPost({ request, env }) {
         throw aiErr;
       }
     }
-
-    reply = appendHemeNote(reply, messages);
 
     return new Response(JSON.stringify({ reply, fallback }), { headers: CORS });
 
@@ -554,21 +557,26 @@ function prefersThai(text) {
   return /[\u0e00-\u0e7f]/.test(s);
 }
 
-function pickHemeNote(text) {
-  const notes = prefersThai(text) ? HEME_NOTES_TH : HEME_NOTES_EN;
-  if (!notes.length) return '';
-  const seed = Array.from(String(text || '')).reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
-  return notes[seed % notes.length];
+function intentQuoteRequest(text) {
+  const q = normQ(text);
+  if (!q) return false;
+  return /(^|[\s])quote([\s?!.,]|$)|คำคม|ข้อคิด|กำลังใจ|motivat|inspir|heme quote|hematology quote|hemato quote/.test(q);
 }
 
-function appendHemeNote(reply, messages) {
-  const base = String(reply ?? '').trim();
-  if (!base) return base;
-  if (base.includes('🩸 Heme note:')) return base;
-  const userText = lastUserText(messages);
-  const note = pickHemeNote(userText);
-  if (!note) return base;
-  return `${base}\n\n${note}`;
+function pickQuoteForText(text, wantTh) {
+  const pool = wantTh ? HEMATO_QUOTES_TH : HEMATO_QUOTES_EN;
+  if (!pool.length) return '';
+  const seed = Array.from(String(text || '')).reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
+  return pool[seed % pool.length];
+}
+
+function buildQuoteReply(text) {
+  const wantTh = prefersThai(text);
+  const quote = pickQuoteForText(text, wantTh);
+  if (wantTh) {
+    return `🩸 Hemato quote:\n${quote}\n\nถ้าอยากได้อีก บอกได้เลยว่า "ขอ quote อีก"`;
+  }
+  return `🩸 Hemato quote:\n${quote}\n\nIf you want another one, just ask for another quote.`;
 }
 
 function pickLocalizedName(row, wantTh, thKeys = ['name'], enKeys = ['name_en']) {

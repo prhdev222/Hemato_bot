@@ -131,6 +131,19 @@ header {
   font-size: .83rem; cursor: pointer; white-space: nowrap;
 }
 .save-btn:hover { background: var(--red-hover); }
+.menu-action-btn {
+  padding: 4px 12px;
+  background: var(--green-l);
+  color: #8df0bf;
+  border: 1px solid var(--green-b);
+  border-radius: 8px;
+  font-family: 'Sarabun', sans-serif;
+  font-size: .83rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.menu-action-btn:hover { background: var(--green); color: var(--text-inv); border-color: var(--green); }
 .settings-note { font-size: .68rem; color: var(--faint); width: 100%; }
 .settings-groq-hint {
   font-size: .7rem; color: var(--muted); width: 100%; line-height: 1.55; padding-top: 1px;
@@ -329,6 +342,7 @@ img.hemato-zoom { cursor: zoom-in; }
     <input type="password" id="keyInput" placeholder="sk-... หรือ AIza...">
     <button class="save-btn" onclick="saveKey()">บันทึก</button>
   </div>
+  <button class="menu-action-btn" type="button" onclick="askHematoQuote()">🩸 Hemato Quote</button>
   <div class="settings-note">🔒 OpenAI / Gemini / OpenRouter: key เก็บในเครื่องคุณ — Groq / SambaNova ใช้ key ฝั่งเซิร์ฟเวอร์ (Cloudflare)</div>
   <div class="settings-groq-hint">💡 Groq ฟรีมีโควตาต่อวัน ถ้ามีคนใช้พร้อมกันเยอะอาจตอบไม่ได้ชั่วคราว — ลอง SambaNova (ตั้ง SAMBANOVA_API_KEY หรือ API_KEY ตามแดชบอร์ด SambaNova ใน Cloudflare Pages) / OpenRouter / OpenAI / Gemini</div>
 </div>
@@ -439,6 +453,12 @@ function saveKey() {
   const k = document.getElementById('keyInput').value.trim();
   const c = cfg(); c.apiKey = k; setCfg(c);
   bot('✅ บันทึก API key แล้วครับ');
+}
+
+function askHematoQuote() {
+  const box = document.getElementById('box');
+  const useThai = /[\u0e00-\u0e7f]/.test(box?.value || '');
+  q(useThai ? 'ขอ hemato quote หน่อย' : 'Give me a hemato quote');
 }
 
 (function init() {
